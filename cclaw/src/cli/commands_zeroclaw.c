@@ -1,0 +1,141 @@
+// commands_zeroclaw.c - CLI commands using ZeroClaw Rust agent via FFI
+// SPDX-License-Identifier: MIT
+
+#include "commands.h"
+#include "zeroclaw_ffi.h"
+#include "core/config.h"
+#include "core/error.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+// Utility: Build JSON config from cclaw config
+static char* build_zeroclaw_config(const config_t* config) {
+    if (!config) return NULL;
+
+    // Calculate buffer size needed
+    size_t bufsize = 4096;
+    char* json = malloc(bufsize);
+    if (!json) return NULL;
+
+    // Build minimal JSON config
+    snprintf(json, bufsize,
+        "{"
+        "\"api_key\":\"%.*s\","
+        "\"default_provider\":\"%.*s\","
+        "\"default_model\":\"%.*s\","
+        "\"default_temperature\":%.2f,"
+        "\"workspace_dir\":\"%.*s\","
+        "\"memory\":{\"backend\":\"%.*s\"},"
+        "\"autonomy\":{\"level\":%d},"
+        "\"browser\":{\"enabled\":false},"
+        "\"composio\":{\"enabled\":false}"
+        "}",
+        (int)config->api_key.len, config->api_key.data ? config->api_key.data : "",
+        (int)config->default_provider.len, config->default_provider.data ? config->default_provider.data : "openrouter",
+        (int)config->default_model.len, config->default_model.data ? config->default_model.data : "",
+        config->default_temperature,
+        (int)config->workspace_dir.len, config->workspace_dir.data ? config->workspace_dir.data : "~/.cclaw",
+        (int)config->memory.backend.len, config->memory.backend.data ? config->memory.backend.data : "sqlite",
+        config->autonomy.level
+    );
+
+    return json;
+}
+
+// Agent command using ZeroClaw
+err_t cmd_agent_zeroclaw(config_t* config, int argc, char** argv) {
+    // Parse arguments
+    const char* message = NULL;
+    const char* provider_override = NULL;
+    const char* model_override = NULL;
+    double temperature = config->default_temperature;
+
+    for (int i = 0; i < argc; i++) {
+        if ((strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--message") == 0) && i + 1 < argc) {
+            message = argv[i + 1];
+            i++;
+        } else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--provider") == 0) && i + 1 < argc) {
+            provider_override = argv[i + 1];
+            i++;
+        } else if ((strcmp(argv[i], "--model") == 0) && i + 1 < argc) {
+            model_override = argv[i + 1];
+            i++;
+        } else if ((strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--temperature") == 0) && i + 1 < argc) {
+            temperature = atof(argv[i + 1]);
+            i++;
+        }
+    }
+
+    // Build config JSON
+    char* config_json = build_zeroclaw_config(config);
+    if (!config_json) {
+        fprintf(stderr, "Failed to build configuration\n");
+        return ERR_OUT_OF_MEMORY;
+    }
+
+    // Initialize ZeroClaw runtime
+    zc_agent_runtime_t* runtime = NULL;
+    zc_result_t result = zc_agent_init(
+        config_json,
+        config->workspace_dir.data,
+        &runtime
+    );
+
+    free(config_json);
+
+    if (result != ZC_OK) {
+        fprintf(stderr, "Failed to initialize ZeroClaw agent: %d\n", result);
+        return ERR_NOT_INITIALIZED;
+    }
+
+    printf("\033[2J\033[H"); // Clear screen
+    printf("\033[1m");
+    printf("╔══════════════════════════════════════════════════════════╗\n");
+    printf("║           CClaw Agent (Powered by ZeroClaw)              ║\n");
+    printf("╠══════════════════════════════════════════════════════════╣\n");
+    printf("║  Type /quit to exit  |  ZeroClaw v%s\n", zc_version());
+    printf("╚══════════════════════════════════════════════════════════╝\n");
+    printf("\033[0m\n");
+
+    if (message) {
+        // Single message mode
+        char* response = NULL;
+        result = zc_agent_run_single(
+            runtime,
+            message,
+            provider_override,
+            model_override,
+            temperature,
+            &response
+        );
+
+        if (result == ZC_OK && response) {
+            printf("%s\n", response);
+            zc_free_string(response);
+        } else {
+            fprintf(stderr, "Agent error: %d\n", result);
+        }
+    } else {
+        // Interactive mode
+        result = zc_agent_run_interactive(
+            runtime,
+            provider_override,
+            model_override,
+            temperature
+        );
+
+        if (result != ZC_OK) {
+            fprintf(stderr, "Agent error: %d\n", result);
+        }
+    }
+
+    // Cleanup
+    zc_agent_shutdown(runtime);
+
+    printf("\n\033[32m[Session ended. Goodbye!]\033[0m\n");
+
+    return (result == ZC_OK) ? ERR_OK : ERR_FAILED;
+}
