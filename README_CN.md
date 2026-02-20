@@ -25,6 +25,100 @@ cagent/
 └── README.md        # 主说明文件
 └── README_CN.md     # 中文说明文件（本文件）
 ```
+## CClaw 技能加载架构分析
+
+  核心结论：CClaw 是套皮，技能加载完全依赖 ZeroClaw (Rust)
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │                        CClaw (C)                            │
+  │  ┌─────────────────────────────────────────────────────┐   │
+  │  │  commands_zeroclaw.c                                │   │
+  │  │  └─ cmd_agent_zeroclaw()                            │   │
+  │  │     └─ zc_agent_init() ──────────────────────┐      │   │
+  │  └──────────────────────────────────────────────┼──────┘   │
+  └─────────────────────────────────────────────────┼───────────┘
+                                                    │
+                                                    ▼ FFI 调用
+  ┌─────────────────────────────────────────────────────────────┐
+  │                     ZeroClaw (Rust)                         │
+  │  ┌─────────────────────────────────────────────────────┐   │
+  │  │  ffi/mod.rs                                         │   │
+  │  │  └─ zc_agent_init()                                 │   │
+  │  │     └─ build_system_prompt() ────────────────┐      │   │
+  │  │        └─ load_skills(&config.workspace_dir) │      │   │
+  │  │                                              ▼      │   │
+  │  │        skills/mod.rs                                │   │
+  │  │        ├─ load_skills()                             │   │
+  │  │        │   ├─ load_open_skills()      ← ~/.zeroclaw/open-skills  │
+  │  │        │   └─ load_workspace_skills() ← ~/.cclaw/workspace/skills │
+  │  │        ├─ load_skill_toml()                         │   │
+  │  │        └─ load_skill_md()                           │   │
+  │  └─────────────────────────────────────────────────────┘   │
+  └─────────────────────────────────────────────────────────────┘
+
+  技能加载流程
+
+  1. CClaw 启动时（commands_zeroclaw.c）
+  // 传递 workspace 给 ZeroClaw
+  zc_agent_init(
+      config_json,
+      workspace,  // 通常是 "." (当前目录)
+      &runtime
+  );
+
+  2. ZeroClaw 初始化时（ffi/mod.rs:119）
+  fn build_system_prompt(config: &Config, tools: &[Box<dyn Tool>]) -> String {
+      let skills = crate::skills::load_skills(&config.workspace_dir);
+      // ... 将技能添加到系统提示词
+  }
+
+  3. 技能加载逻辑（skills/mod.rs:73-82）
+  pub fn load_skills(workspace_dir: &Path) -> Vec<Skill> {
+      let mut skills = Vec::new();
+
+      // 1. 加载 open-skills (社区技能库)
+      if let Some(open_skills_dir) = ensure_open_skills_repo() {
+          skills.extend(load_open_skills(&open_skills_dir));  // ~/.zeroclaw/open-skills
+      }
+
+      // 2. 加载用户工作空间技能
+      skills.extend(load_workspace_skills(workspace_dir));  // ~/.cclaw/workspace/skills
+
+      skills
+  }
+
+  默认目录结构
+
+  类型: ZeroClaw 配置
+  路径: ~/.zeroclaw/config.toml
+  说明: ZeroClaw 自身配置
+  ────────────────────────────────────────
+  类型: CClaw/ZeroClaw 工作空间
+  路径: ~/.cclaw/workspace/
+  说明: 默认 workspace_dir
+  ────────────────────────────────────────
+  类型: 用户技能
+  路径: ~/.cclaw/workspace/skills/<name>/SKILL.toml
+  说明: 用户自定义技能
+  ────────────────────────────────────────
+  类型: 社区技能
+  路径: ~/.zeroclaw/open-skills/ 或 ~/open-skills/
+  说明: 从 GitHub 克隆的 open-skills 仓库
+
+  关键点
+
+  1. CClaw 的 skill.c 是"空气" - 虽然存在，但当前没有调用它的代码。cclaw/src/cli/commands_zeroclaw.c 直接走
+  FFI 调用 Rust。
+  2. 技能加载完全在 Rust 层 - zeroclaw/src/skills/mod.rs 有完整的技能加载、解析、管理实现。
+  3. ZeroClaw 默认使用 ~/.cclaw 作为工作空间（见 config/schema.rs:816）：
+  let cclaw_dir = home.join(".cclaw");
+  Self {
+      workspace_dir: cclaw_dir,  // ← 默认就是 ~/.cclaw
+      ...
+  }
+  4. 技能路径解析：
+    - 用户技能：~/.cclaw/workspace/skills/<skill-name>/SKILL.toml
+    - 或：~/.cclaw/workspace/skills/<skill-name>/SKILL.md
 
 ## CClaw（C 语言实现）
 

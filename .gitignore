@@ -1,0 +1,60 @@
+# CAgent - Git Ignore File
+# https://git-scm.com/docs/gitignore
+
+# === Build Output ===
+/build/
+/bin/
+/lib/
+/obj/
+*.o
+*.a
+*.so
+*.dll
+*.exe
+
+# === CClaw Specific ===
+cclaw/bin/
+cclaw/build/
+cclaw/*.o
+
+# === ZeroClaw Specific ===
+zeroclaw/target/
+zeroclaw/Cargo.lock
+
+# === Runtime Data (User-specific) ===
+/.zeroclaw/
+/.zeroclaw_history
+/state/
+/memory/
+/.cclaw/
+
+# === Test Artifacts ===
+*.log
+*.tmp
+/test.txt
+test_output/
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === OS Files ===
+.DS_Store
+Thumbs.db
+
+# === Dependencies ===
+/vendor/
+/node_modules/
+
+# === Environment ===
+.env
+.env.local
+
+# === Database ===
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3

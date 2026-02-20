@@ -7,6 +7,8 @@
 #include "core/types.h"
 #include "core/error.h"
 #include "core/agent.h"
+#include "core/extension.h"
+#include "core/tool.h"
 
 #include <stdint.h>
 #include <stdbool.h>
