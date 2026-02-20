@@ -508,21 +508,31 @@ pub unsafe extern "C" fn zc_agent_run_interactive(
         }
     };
 
-    // Simple synchronous loop for FFI - read from stdin line by line
-    let stdin = std::io::stdin();
-    use std::io::BufRead;
+    // Interactive mode using rustyline for proper line editing
+    use rustyline::Editor;
+    use rustyline::history::DefaultHistory;
+    
+    println!("🦀 ZeroClaw Interactive Mode");
+    println!("Type /quit to exit.\n");
+
+    // Create rustyline editor
+    let mut rl = match Editor::<(), DefaultHistory>::new() {
+        Ok(editor) => editor,
+        Err(e) => {
+            eprintln!("Failed to create editor: {}", e);
+            return ZcResult::Error;
+        }
+    };
+    rl.load_history(&std::path::Path::new(".zeroclaw_history")).ok();
 
     // Persistent conversation history across turns
     let mut history: Vec<ChatMessage> = vec![ChatMessage::system(&system_prompt)];
 
     loop {
-        print!("> ");
-        let _ = std::io::stdout().flush();
-
-        let mut line = String::new();
-        match stdin.lock().read_line(&mut line) {
-            Ok(0) => break, // EOF
-            Ok(_) => {
+        let readline = rl.readline("> ");
+        match readline {
+            Ok(line) => {
+                rl.add_history_entry(&line);
                 let line = line.trim();
                 if line.is_empty() {
                     continue;
@@ -587,13 +597,24 @@ pub unsafe extern "C" fn zc_agent_run_interactive(
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("Failed to read input: {}", e);
+            Err(rustyline::error::ReadlineError::Interrupted) => {
+                println!("^C");
+                continue;
+            }
+            Err(rustyline::error::ReadlineError::Eof) => {
+                break;
+            }
+            Err(err) => {
+                eprintln!("Error: {:?}", err);
                 break;
             }
         }
     }
 
+    // Save history (if supported)
+    let history_path = std::path::Path::new(".zeroclaw_history");
+    let _ = rl.save_history(history_path);
+    
     ZcResult::Ok
 }
 
