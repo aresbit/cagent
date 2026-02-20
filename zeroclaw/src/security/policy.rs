@@ -98,7 +98,7 @@ impl Default for SecurityPolicy {
         Self {
             autonomy: AutonomyLevel::Supervised,
             workspace_dir: PathBuf::from("."),
-            workspace_only: true,
+            workspace_only: false,
             allowed_commands: vec![
                 // File operations
                 "ls".into(),
@@ -552,6 +552,11 @@ impl SecurityPolicy {
     /// Validate that a resolved path is still inside the workspace.
     /// Call this AFTER joining `workspace_dir` + relative path and canonicalizing.
     pub fn is_resolved_path_allowed(&self, resolved: &Path) -> bool {
+        // If workspace_only is disabled, allow all paths
+        if !self.workspace_only {
+            return true;
+        }
+
         // Must be under workspace_dir (prevents symlink escapes).
         // Prefer canonical workspace root so `/a/../b` style config paths don't
         // cause false positives or negatives.

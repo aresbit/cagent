@@ -25,9 +25,9 @@ BUILD_DIR := build
 BIN_DIR := $(BUILD_DIR)/bin
 LIB_DIR := $(BUILD_DIR)/lib
 
-# 目标文件
-CCLAW_BIN := $(CCLAW_DIR)/bin/cclaw
-ZEROCLAW_BIN := $(ZEROCLAW_DIR)/target/release/zeroclaw
+# 目标文件 - 使用 build 目录
+CCLAW_BIN := $(BIN_DIR)/cclaw
+ZEROCLAW_BIN := $(ZEROCLAW_DIR)/target/release/libzeroclaw.a
 
 # 帮助信息
 help:
@@ -101,8 +101,9 @@ debug: cclaw-debug zeroclaw-debug
 cclaw: $(BUILD_DIR)
 	@echo "$(YELLOW)=== 构建 CClaw (release) ===$(NC)"
 	cd $(CCLAW_DIR) && $(MAKE)
-	@cp -f $(CCLAW_BIN) $(BIN_DIR)/cclaw 2>/dev/null || true
-	@echo "$(GREEN)✓ CClaw 构建完成$(NC)"
+	@mkdir -p $(BIN_DIR)
+	@cp -f $(CCLAW_DIR)/bin/cclaw $(BIN_DIR)/cclaw
+	@echo "$(GREEN)✓ CClaw 构建完成 -> $(BIN_DIR)/cclaw$(NC)"
 
 # 构建 CClaw (debug)
 cclaw-debug: $(BUILD_DIR)

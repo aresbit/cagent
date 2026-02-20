@@ -603,7 +603,7 @@ pub unsafe extern "C" fn zc_agent_run_interactive(
             }
             Err(rustyline::error::ReadlineError::Interrupted) => {
                 println!("^C");
-                continue;
+                break;
             }
             Err(rustyline::error::ReadlineError::Eof) => {
                 break;

@@ -8,8 +8,8 @@ use std::time::Duration;
 
 /// Maximum shell command execution time before kill.
 const SHELL_TIMEOUT_SECS: u64 = 60;
-/// Maximum output size in bytes (1MB).
-const MAX_OUTPUT_BYTES: usize = 1_048_576;
+/// Maximum output size in bytes (10MB).
+const MAX_OUTPUT_BYTES: usize = 1_048_5760;
 /// Environment variables safe to pass to shell commands.
 /// Only functional variables are included — never API keys or secrets.
 const SAFE_ENV_VARS: &[&str] = &[

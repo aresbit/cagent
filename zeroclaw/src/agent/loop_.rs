@@ -77,6 +77,107 @@ fn find_tool<'a>(tools: &'a [Box<dyn Tool>], name: &str) -> Option<&'a dyn Tool>
 /// ```
 ///
 /// Also supports JSON with `tool_calls` array from OpenAI-format responses.
+fn fix_truncated_json(s: &str) -> String {
+    let result = s.trim().to_string();
+    
+    // If JSON is already valid, return as-is
+    if serde_json::from_str::<serde_json::Value>(&result).is_ok() {
+        return result;
+    }
+    
+    // For truncated tool_calls, try to extract and fix the arguments field
+    // Pattern: {"name": "...", "arguments": "..."} where arguments may be truncated
+    
+    // Try to extract arguments value from JSON string and fix it
+    let mut fixed = result.clone();
+    
+    // Find "arguments": " pattern and try to fix the truncated JSON string
+    if let Some(args_start) = fixed.find("\"arguments\": \"") {
+        let after_args = &fixed[args_start + 14..]; // Skip "arguments": "
+        
+        // Find where the arguments string should end (before the closing brace)
+        let target_end = after_args.len();
+        
+        // Try to find incomplete JSON patterns and fix them
+        let mut depth = 0;
+        let mut in_string = false;
+        let mut escape_next = false;
+        let mut end_pos = 0;
+        
+        for (i, c) in after_args.chars().enumerate() {
+            if escape_next {
+                escape_next = false;
+                continue;
+            }
+            match c {
+                '\\' => escape_next = true,
+                '"' => in_string = !in_string,
+                '{' | '[' if !in_string => depth += 1,
+                '}' | ']' if !in_string => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end_pos = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        if end_pos > 0 {
+            // Extract and try to fix the arguments
+            let args_str = &after_args[..end_pos];
+            if serde_json::from_str::<serde_json::Value>(args_str).is_err() {
+                // Arguments are truncated, try to fix common patterns
+                let mut fixed_args = args_str.to_string();
+                
+                // Close any open braces/brackets
+                let mut opens = 0i32;
+                for c in fixed_args.chars() {
+                    match c {
+                        '{' | '[' => opens += 1,
+                        '}' | ']' => opens -= 1,
+                        _ => {}
+                    }
+                }
+                while opens > 0 {
+                    fixed_args.push('}');
+                    opens -= 1;
+                }
+                
+                // Replace the truncated arguments with fixed version
+                let before = &fixed[..args_start + 14];
+                let after = &after_args[end_pos..];
+                fixed = format!("{}{}{}", before, fixed_args, after);
+            }
+        }
+    }
+    
+    // Try to close any remaining open braces/brackets at top level
+    let mut opens = 0i32;
+    for c in fixed.chars() {
+        match c {
+            '{' | '[' => opens += 1,
+            '}' | ']' => opens -= 1,
+            _ => {}
+        }
+    }
+    
+    while opens > 0 {
+        if fixed.ends_with('[') || fixed.ends_with('{') {
+            fixed.push_str("null}");
+        } else {
+            fixed.push('}');
+        }
+        opens -= 1;
+    }
+    
+    // Remove trailing comma
+    fixed = fixed.trim_end_matches(',').to_string();
+    
+    fixed
+}
+
 fn parse_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
     let mut text_parts = Vec::new();
     let mut calls = Vec::new();
@@ -84,7 +185,8 @@ fn parse_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
 
     // First, try to parse as OpenAI-style JSON response with tool_calls array
     // This handles providers like Minimax that return tool_calls in native JSON format
-    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(response.trim()) {
+    let fixed_response = fix_truncated_json(response);
+    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(fixed_response.trim()) {
         if let Some(tool_calls) = json_value.get("tool_calls").and_then(|v| v.as_array()) {
             for tc in tool_calls {
                 if let Some(function) = tc.get("function") {
@@ -277,12 +379,15 @@ pub fn build_tool_instructions(tools_registry: &[Box<dyn Tool>]) -> String {
     let mut instructions = String::new();
     instructions.push_str("\n## Tool Use Protocol\n\n");
     instructions.push_str("CRITICAL: You MUST use <tool_call> tags to call tools. Never just describe what you will do!\n\n");
+    instructions.push_str("IMPORTANT: Only call ONE tool at a time. If you need multiple tools, wait for the result and call the next tool in your response.\n\n");
     instructions.push_str("To call a tool, you MUST output this exact format:\n\n");
     instructions.push_str("<tool_call>\n{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}\n</tool_call>\n\n");
-    instructions.push_str("Correct examples:\n");
+    instructions.push_str("Correct examples (one tool at a time):\n");
     instructions.push_str("- `<tool_call>{\"name\": \"shell\", \"arguments\": {\"command\": \"ls -la\"}}</tool_call>`\n");
     instructions.push_str("- `<tool_call>{\"name\": \"file_write\", \"arguments\": {\"path\": \"test.txt\", \"content\": \"hello\"}}</tool_call>`\n\n");
+    instructions.push_str("- After getting the result, then call the next tool\n\n");
     instructions.push_str("WRONG (will NOT work):\n");
+    instructions.push_str("- Calling multiple tools in one response\n");
     instructions.push_str("- `<tool_call><name>shell</name><arguments>...</arguments></tool_call>` - DO NOT USE THIS FORMAT!\n");
     instructions.push_str("- \"I will execute ls -la for you\"\n");
     instructions.push_str("- Just describing the command without <tool_call> tags\n\n");

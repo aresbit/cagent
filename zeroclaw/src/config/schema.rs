@@ -810,9 +810,10 @@ impl Default for Config {
         let home =
             UserDirs::new().map_or_else(|| PathBuf::from("."), |u| u.home_dir().to_path_buf());
         let zeroclaw_dir = home.join(".zeroclaw");
+        let cclaw_dir = home.join(".cclaw");
 
         Self {
-            workspace_dir: zeroclaw_dir.join("workspace"),
+            workspace_dir: cclaw_dir,
             config_path: zeroclaw_dir.join("config.toml"),
             api_key: None,
             default_provider: Some("openrouter".to_string()),
@@ -842,12 +843,18 @@ impl Config {
             .map(|u| u.home_dir().to_path_buf())
             .context("Could not find home directory")?;
         let zeroclaw_dir = home.join(".zeroclaw");
+        let cclaw_dir = home.join(".cclaw");
         let config_path = zeroclaw_dir.join("config.toml");
 
         if !zeroclaw_dir.exists() {
             fs::create_dir_all(&zeroclaw_dir).context("Failed to create .zeroclaw directory")?;
             fs::create_dir_all(zeroclaw_dir.join("workspace"))
                 .context("Failed to create workspace directory")?;
+        }
+
+        // Also ensure ~/.cclaw exists
+        if !cclaw_dir.exists() {
+            fs::create_dir_all(&cclaw_dir).context("Failed to create .cclaw directory")?;
         }
 
         if config_path.exists() {
@@ -857,12 +864,12 @@ impl Config {
                 toml::from_str(&contents).context("Failed to parse config file")?;
             // Set computed paths that are skipped during serialization
             config.config_path = config_path.clone();
-            config.workspace_dir = zeroclaw_dir.join("workspace");
+            config.workspace_dir = cclaw_dir;
             Ok(config)
         } else {
             let mut config = Config::default();
             config.config_path = config_path.clone();
-            config.workspace_dir = zeroclaw_dir.join("workspace");
+            config.workspace_dir = cclaw_dir;
             config.save()?;
             Ok(config)
         }

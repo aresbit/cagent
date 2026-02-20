@@ -76,11 +76,12 @@ err_t cmd_agent_zeroclaw(config_t* config, int argc, char** argv) {
         return ERR_OUT_OF_MEMORY;
     }
 
-    // Initialize ZeroClaw runtime - use current directory as workspace
+    // Initialize ZeroClaw runtime - use current directory as primary workspace
+    // The agent can also access ~/.cclaw for skills/config
     char cwd[1024];
-    const char* workspace = cwd;
-    if (getcwd(cwd, sizeof(cwd)) == NULL) {
-        workspace = ".";
+    const char* workspace = ".";
+    if (getcwd(cwd, sizeof(cwd)) != NULL) {
+        workspace = cwd;
     }
     
     zc_agent_runtime_t* runtime = NULL;
