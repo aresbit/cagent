@@ -27,16 +27,47 @@ make
 ./build/bin/cclaw agent -m "Hello!"
 ```
 
+## Configuration
+
+### API Keys
+
+Set your API key via environment variable:
+
+```bash
+export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
+export DEEPSEEK_API_KEY=sk-...
+export OPENROUTER_API_KEY=sk-or-...
+```
+
+Or create a config file at `~/.cclaw/config.json`:
+
+```json
+{
+  "api_key": "your-api-key-here",
+  "default_provider": "openai",
+  "default_model": "gpt-4o",
+  "default_temperature": 0.7
+}
+```
+
+### Provider Options
+
+| Provider | Environment Variable | Default Model |
+|----------|---------------------|---------------|
+| OpenAI | `OPENAI_API_KEY` | gpt-4o |
+| Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-20250514 |
+| DeepSeek | `DEEPSEEK_API_KEY` | deepseek-chat |
+| OpenRouter | `OPENROUTER_API_KEY` | anthropic/claude-sonnet-4-20250514 |
+| Kimi | `KIMI_API_KEY` | moonshot-v1-8k |
+
 ## Downloads
 
-Pre-built binaries for v1.0.6:
+Pre-built binaries for v1.0.8:
 
 | Platform | File |
 |----------|------|
 | Linux | [cclaw-linux-amd64](https://github.com/aresbit/cagent/releases/latest) |
-| macOS ARM | [cclaw-macos-arm64](https://github.com/aresbit/cagent/releases/latest) |
-| macOS Intel | [cclaw-macos-x86_64](https://github.com/aresbit/cagent/releases/latest) |
-| Windows | [cclaw-windows.exe](https://github.com/aresbit/cagent/releases/latest) |
 
 ## Build from Source
 
