@@ -173,7 +173,7 @@ config_t* config_default(allocator_t* alloc) {
     config->gateway.idempotency_ttl_secs = 300;
 
     // Autonomy configuration
-    config->autonomy.level = AUTONOMY_LEVEL_SUPERVISED;
+    config->autonomy.level = AUTONOMY_LEVEL_FULL;
     config->autonomy.workspace_only = true;
     config->autonomy.max_actions_per_hour = 20;
     config->autonomy.max_cost_per_day_cents = 500;

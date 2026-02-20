@@ -4,6 +4,7 @@
 
 #include "core/agent.h"
 #include "core/config.h"
+#include "core/tool.h"
 #include "providers/router.h"
 #include "cclaw.h"
 
@@ -180,6 +181,14 @@ static bool handle_builtin_command(const char* input, agent_t* agent, agent_sess
 err_t agent_runtime_init(config_t* config) {
     if (!config) return ERR_INVALID_ARGUMENT;
 
+    // Initialize tool registry
+    tool_registry_init();
+
+    // Get list of available tools from registry
+    const char** tool_names = NULL;
+    uint32_t tool_count = 0;
+    tool_registry_list(&tool_names, &tool_count);
+
     // Create agent configuration
     agent_config_t agent_config = agent_config_default();
     agent_config.autonomy_level = config->autonomy.level;
@@ -190,6 +199,27 @@ err_t agent_runtime_init(config_t* config) {
     err_t err = agent_create(&agent_config, &g_runtime.agent);
     if (err != ERR_OK) {
         return err;
+    }
+
+    // Create and initialize tools
+    if (tool_count > 0) {
+        g_runtime.agent->ctx->tools = calloc(tool_count, sizeof(tool_t*));
+        if (g_runtime.agent->ctx->tools) {
+            g_runtime.agent->ctx->tool_count = tool_count;
+
+            tool_context_t tool_ctx = tool_context_default();
+            if (!str_empty(config->workspace_dir)) {
+                tool_ctx.workspace_dir = str_dup(config->workspace_dir, NULL);
+            }
+
+            for (uint32_t i = 0; i < tool_count; i++) {
+                tool_t* tool = NULL;
+                if (tool_create(tool_names[i], &tool) == ERR_OK && tool) {
+                    tool->vtable->init(tool, &tool_ctx);
+                    g_runtime.agent->ctx->tools[i] = tool;
+                }
+            }
+        }
     }
 
     // Create default session

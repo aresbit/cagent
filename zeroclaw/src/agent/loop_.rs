@@ -14,7 +14,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 /// Maximum agentic tool-use iterations per user message to prevent runaway loops.
-const MAX_TOOL_ITERATIONS: usize = 10;
+const MAX_TOOL_ITERATIONS: usize = 1024;
 
 /// Maximum number of non-system messages to keep in history.
 /// When exceeded, the oldest messages are dropped (system prompt is always preserved).
@@ -123,6 +123,10 @@ fn parse_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
     }
 
     // Fall back to XML-style <invoke> tag parsing (ZeroClaw's original format)
+    // First, remove any <thinking> tags that might interfere with parsing
+    let cleaned_response = response.replace("<thinking>", "").replace("</thinking>", "");
+    let mut remaining = cleaned_response.as_str();
+    
     while let Some(start) = remaining.find("<tool_call>") {
         // Everything before the tag is text
         let before = &remaining[..start];
@@ -132,21 +136,43 @@ fn parse_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
 
         if let Some(end) = remaining[start..].find("</tool_call>") {
             let inner = &remaining[start + 11..start + end];
-            match serde_json::from_str::<serde_json::Value>(inner.trim()) {
-                Ok(parsed) => {
-                    let name = parsed
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let arguments = parsed
-                        .get("arguments")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            // Try to parse as JSON first
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(inner.trim()) {
+                let name = parsed
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let arguments = parsed
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                if !name.is_empty() {
                     calls.push(ParsedToolCall { name, arguments });
                 }
-                Err(e) => {
-                    tracing::warn!("Malformed <tool_call> JSON: {e}");
+            } else {
+                // Try to extract name and arguments from XML-like format
+                // <name>shell</name><arguments>{"command": "..."}</arguments>
+                let name = if let Some(n_start) = inner.find("<name>") {
+                    if let Some(n_end) = inner[n_start..].find("</name>") {
+                        let n = &inner[n_start + 6..n_start + n_end];
+                        Some(n.trim().to_string())
+                    } else { None }
+                } else { None };
+                
+                let args = if let Some(a_start) = inner.find("<arguments>") {
+                    if let Some(a_end) = inner[a_start..].find("</arguments>") {
+                        let a = &inner[a_start + 11..a_start + a_end];
+                        Some(a.trim().to_string())
+                    } else { None }
+                } else { None };
+                
+                if let (Some(n), Some(a)) = (name, args) {
+                    if !n.is_empty() {
+                        // Try to parse arguments as JSON
+                        let arguments = serde_json::from_str(&a).unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                        calls.push(ParsedToolCall { name: n, arguments });
+                    }
                 }
             }
             remaining = &remaining[start + end + 12..];
@@ -171,7 +197,7 @@ struct ParsedToolCall {
 
 /// Execute a single turn of the agent loop: send messages, parse tool calls,
 /// execute tools, and loop until the LLM produces a final text response.
-async fn agent_turn(
+pub async fn agent_turn(
     provider: &dyn Provider,
     history: &mut Vec<ChatMessage>,
     tools_registry: &[Box<dyn Tool>],
@@ -229,9 +255,10 @@ async fn agent_turn(
                 format!("Unknown tool: {}", call.name)
             };
 
+            // Use a different tag name to avoid re-parsing as tool call
             let _ = writeln!(
                 tool_results,
-                "<tool_result name=\"{}\">\n{}\n</tool_result>",
+                "<tool_response name=\"{}\">\n{}\n</tool_response>",
                 call.name, result
             );
         }
@@ -246,15 +273,20 @@ async fn agent_turn(
 
 /// Build the tool instruction block for the system prompt so the LLM knows
 /// how to invoke tools.
-fn build_tool_instructions(tools_registry: &[Box<dyn Tool>]) -> String {
+pub fn build_tool_instructions(tools_registry: &[Box<dyn Tool>]) -> String {
     let mut instructions = String::new();
     instructions.push_str("\n## Tool Use Protocol\n\n");
-    instructions.push_str("To use a tool, wrap a JSON object in <tool_call></tool_call> tags:\n\n");
-    instructions.push_str("```\n<tool_call>\n{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}\n</tool_call>\n```\n\n");
-    instructions.push_str("You may use multiple tool calls in a single response. ");
-    instructions.push_str("After tool execution, results appear in <tool_result> tags. ");
-    instructions
-        .push_str("Continue reasoning with the results until you can give a final answer.\n\n");
+    instructions.push_str("CRITICAL: You MUST use <tool_call> tags to call tools. Never just describe what you will do!\n\n");
+    instructions.push_str("To call a tool, you MUST output this exact format:\n\n");
+    instructions.push_str("<tool_call>\n{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}\n</tool_call>\n\n");
+    instructions.push_str("Correct examples:\n");
+    instructions.push_str("- `<tool_call>{\"name\": \"shell\", \"arguments\": {\"command\": \"ls -la\"}}</tool_call>`\n");
+    instructions.push_str("- `<tool_call>{\"name\": \"file_write\", \"arguments\": {\"path\": \"test.txt\", \"content\": \"hello\"}}</tool_call>`\n\n");
+    instructions.push_str("WRONG (will NOT work):\n");
+    instructions.push_str("- `<tool_call><name>shell</name><arguments>...</arguments></tool_call>` - DO NOT USE THIS FORMAT!\n");
+    instructions.push_str("- \"I will execute ls -la for you\"\n");
+    instructions.push_str("- Just describing the command without <tool_call> tags\n\n");
+    instructions.push_str("You MUST include <tool_call> tags in your response. After execution, results appear in <tool_response> tags.\n\n");
     instructions.push_str("### Available Tools\n\n");
 
     for tool in tools_registry {

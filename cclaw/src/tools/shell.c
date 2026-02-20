@@ -144,8 +144,13 @@ static err_t shell_init(tool_t* tool, const tool_context_t* context) {
 
     // Basic safe command patterns
     const char* default_commands[] = {
-        "ls", "pwd", "echo", "cat", "grep"
+        "ls", "pwd", "echo", "cat", "grep", "find", "mkdir", "rm", "rmdir",
+        "cp", "mv", "touch", "chmod", "chown", "head", "tail", "wc", "sort",
+        "uniq", "awk", "sed", "cut", "tr", "tee", "which", "whereis", "file",
+        "cd", "env", "printenv", "date", "whoami", "hostname", "id", "ps",
+        "kill", "killall", "top", "df", "du", "free", "uptime", "uname"
     };
+    shell_data->allowed_count = 35;
 
     for (uint32_t i = 0; i < shell_data->allowed_count; i++) {
         shell_data->allowed_commands[i] = str_dup_cstr(default_commands[i], NULL);

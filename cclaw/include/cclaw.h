@@ -9,6 +9,7 @@
 #include "core/error.h"
 #include "core/config.h"
 #include "core/agent.h"
+#include "core/tool.h"
 #include "core/extension.h"
 #include "runtime/agent_loop.h"
 

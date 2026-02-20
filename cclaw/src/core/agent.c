@@ -306,11 +306,200 @@ static err_t build_context_messages(agent_t* agent, agent_session_t* session,
 // Tool Execution
 // ============================================================================
 
+// Helper to build tool definitions from registered tools
+static err_t build_tool_definitions(agent_t* agent, tool_def_t** out_tools, uint32_t* out_count) {
+    if (!agent || !out_tools || !out_count) return ERR_INVALID_ARGUMENT;
+
+    agent_context_t* ctx = agent->ctx;
+    if (!ctx->tools || ctx->tool_count == 0) {
+        *out_tools = NULL;
+        *out_count = 0;
+        return ERR_OK;
+    }
+
+    tool_def_t* tools = calloc(ctx->tool_count, sizeof(tool_def_t));
+    if (!tools) return ERR_OUT_OF_MEMORY;
+
+    for (uint32_t i = 0; i < ctx->tool_count; i++) {
+        tool_t* tool = ctx->tools[i];
+        if (!tool || !tool->vtable) continue;
+
+        str_t name = tool->vtable->get_name();
+        str_t description = tool->vtable->get_description();
+        str_t parameters = tool->vtable->get_parameters_schema();
+
+        tools[i].name = str_dup(name, NULL);
+        tools[i].description = str_dup(description, NULL);
+        tools[i].parameters = str_dup(parameters, NULL);
+    }
+
+    *out_tools = tools;
+    *out_count = ctx->tool_count;
+    return ERR_OK;
+}
+
+// Simple JSON parsing for tool calls
 static err_t parse_tool_calls(const str_t* content, tool_call_t** out_calls, uint32_t* out_count) {
-    // TODO: Parse JSON tool calls from assistant response
-    // This is a simplified placeholder
+    if (!content || !out_calls || !out_count) return ERR_INVALID_ARGUMENT;
+
     *out_calls = NULL;
     *out_count = 0;
+
+    if (str_empty(*content)) return ERR_OK;
+
+    // Check if content contains tool_calls
+    const char* json_str = content->data;
+    const char* tool_calls_start = strstr(json_str, "\"tool_calls\"");
+    if (!tool_calls_start) {
+        // Also try "function_call" for OpenAI compatibility
+        tool_calls_start = strstr(json_str, "\"function_call\"");
+        if (!tool_calls_start) return ERR_OK;
+    }
+
+    // Find the array start
+    const char* arr_start = strchr(tool_calls_start, '[');
+    if (!arr_start) return ERR_OK;
+
+    // Find array end
+    const char* arr_end = arr_start;
+    int depth = 0;
+    while (*arr_end) {
+        if (*arr_end == '[') depth++;
+        else if (*arr_end == ']') {
+            depth--;
+            if (depth == 0) break;
+        }
+        arr_end++;
+    }
+
+    if (depth != 0) return ERR_FAILED;
+
+    // Count number of tool calls (count "{" occurrences in the array)
+    size_t arr_len = arr_end - arr_start + 1;
+    char* arr_copy = malloc(arr_len + 1);
+    if (!arr_copy) return ERR_OUT_OF_MEMORY;
+    memcpy(arr_copy, arr_start, arr_len);
+    arr_copy[arr_len] = '\0';
+
+    uint32_t call_count = 0;
+    for (size_t i = 0; i < arr_len; i++) {
+        if (arr_copy[i] == '{') call_count++;
+    }
+
+    if (call_count == 0) {
+        free(arr_copy);
+        return ERR_OK;
+    }
+
+    tool_call_t* calls = calloc(call_count, sizeof(tool_call_t));
+    if (!calls) {
+        free(arr_copy);
+        return ERR_OUT_OF_MEMORY;
+    }
+
+    // Simple parsing - extract name and arguments from each object
+    uint32_t idx = 0;
+    const char* p = arr_start;
+    while (p < arr_end && idx < call_count) {
+        // Find "name" field
+        const char* name_start = strstr(p, "\"name\"");
+        if (name_start && name_start < arr_end) {
+            name_start = strchr(name_start, ':');
+            if (name_start) {
+                name_start++;
+                while (*name_start == ' ' || *name_start == '"') name_start++;
+                const char* name_end = name_start;
+                while (*name_end && *name_end != '"' && *name_end != ',') name_end++;
+                
+                size_t name_len = name_end - name_start;
+                if (name_len > 0) {
+                    char* name_buf = malloc(name_len + 1);
+                    if (name_buf) {
+                        memcpy(name_buf, name_start, name_len);
+                        name_buf[name_len] = '\0';
+                        calls[idx].name = str_dup_cstr(name_buf, NULL);
+                        free(name_buf);
+                    }
+                }
+            }
+        }
+
+        // Find "arguments" or "parameters" field
+        const char* args_start = strstr(p, "\"arguments\"");
+        if (!args_start) args_start = strstr(p, "\"parameters\"");
+        if (args_start && args_start < arr_end) {
+            args_start = strchr(args_start, ':');
+            if (args_start) {
+                args_start++;
+                while (*args_start == ' ' || *args_start == '\n') args_start++;
+                
+                // Handle both object and string formats
+                if (*args_start == '{') {
+                    const char* args_end = args_start;
+                    int a_depth = 0;
+                    while (*args_end && args_end < arr_end) {
+                        if (*args_end == '{') a_depth++;
+                        else if (*args_end == '}') {
+                            a_depth--;
+                            if (a_depth == 0) break;
+                        }
+                        args_end++;
+                    }
+                    size_t args_len = args_end - args_start;
+                    if (args_len > 0) {
+                        char* args_buf = malloc(args_len + 1);
+                        if (args_buf) {
+                            memcpy(args_buf, args_start, args_len);
+                            args_buf[args_len] = '\0';
+                            calls[idx].arguments = str_dup_cstr(args_buf, NULL);
+                            free(args_buf);
+                        }
+                    }
+                } else if (*args_start == '"') {
+                    args_start++;
+                    const char* args_end = args_start;
+                    while (*args_end && *args_end != '"') args_end++;
+                    size_t args_len = args_end - args_start;
+                    if (args_len > 0) {
+                        char* args_buf = malloc(args_len + 1);
+                        if (args_buf) {
+                            memcpy(args_buf, args_start, args_len);
+                            args_buf[args_len] = '\0';
+                            calls[idx].arguments = str_dup_cstr(args_buf, NULL);
+                            free(args_buf);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Move past this object
+        const char* obj_end = strchr(p, '}');
+        if (obj_end) {
+            p = obj_end + 1;
+        } else {
+            break;
+        }
+
+        // Only count if we got a name
+        if (!str_empty(calls[idx].name)) {
+            // Generate ID
+            char id_buf[64];
+            snprintf(id_buf, sizeof(id_buf), "call_%u", idx);
+            calls[idx].id = str_dup_cstr(id_buf, NULL);
+            idx++;
+        }
+    }
+
+    free(arr_copy);
+
+    if (idx > 0) {
+        *out_calls = calls;
+        *out_count = idx;
+        return ERR_OK;
+    }
+
+    free(calls);
     return ERR_OK;
 }
 
@@ -362,14 +551,29 @@ static err_t agent_loop_iteration(agent_t* agent, agent_session_t* session,
     chat_response_t* llm_response = NULL;
     const char* model = str_empty(session->model) ? NULL : session->model.data;
 
-    err_t err = ctx->provider->vtable->chat(
+    // Build tool definitions from registered tools
+    tool_def_t* tools = NULL;
+    uint32_t tool_count = 0;
+    err_t err = build_tool_definitions(agent, &tools, &tool_count);
+
+    err = ctx->provider->vtable->chat(
         ctx->provider,
         messages, message_count,
-        NULL, 0, // TODO: Pass tool definitions
+        tools, tool_count,
         model,
         session->temperature,
         &llm_response
     );
+
+    // Free tool definitions
+    if (tools) {
+        for (uint32_t i = 0; i < tool_count; i++) {
+            free((void*)tools[i].name.data);
+            free((void*)tools[i].description.data);
+            free((void*)tools[i].parameters.data);
+        }
+        free(tools);
+    }
 
     if (err != ERR_OK) {
         return err;
@@ -381,8 +585,10 @@ static err_t agent_loop_iteration(agent_t* agent, agent_session_t* session,
     assistant_msg->tokens_input = llm_response->prompt_tokens;
     assistant_msg->tokens_output = llm_response->completion_tokens;
 
-    // Check for tool calls
-    if (!str_empty(llm_response->tool_calls)) {
+    // Check for tool calls and execute them
+    bool has_tool_calls = !str_empty(llm_response->tool_calls);
+    
+    if (has_tool_calls) {
         assistant_msg->type = AGENT_MSG_TOOL_CALL;
 
         // Parse and execute tool calls
@@ -403,11 +609,18 @@ static err_t agent_loop_iteration(agent_t* agent, agent_session_t* session,
                 // Add to tree
                 agent_message_add_child(assistant_msg, result_msg);
 
+                // Store tool info in assistant message for context
+                assistant_msg->tool_name = str_dup(tool_calls[i].name, NULL);
+                assistant_msg->tool_args = str_dup(tool_calls[i].arguments, NULL);
+
                 free((void*)result.data);
             }
         }
 
         free(tool_calls);
+    } else {
+        // No tool calls - set type to assistant
+        assistant_msg->type = AGENT_MSG_ASSISTANT;
     }
 
     chat_response_free(llm_response);
@@ -615,9 +828,37 @@ err_t agent_navigate_to_parent(agent_t* agent) {
 err_t agent_tool_list_available(agent_t* agent, str_t** out_names, uint32_t* out_count) {
     if (!agent || !out_names || !out_count) return ERR_INVALID_ARGUMENT;
 
-    // Return empty list for now (would query tool registry in full implementation)
-    *out_names = NULL;
-    *out_count = 0;
+    // Query tool registry
+    const char** tool_names = NULL;
+    uint32_t tool_count = 0;
+    
+    err_t err = tool_registry_list(&tool_names, &tool_count);
+    if (err != ERR_OK) {
+        *out_names = NULL;
+        *out_count = 0;
+        return err;
+    }
+
+    if (tool_count == 0) {
+        *out_names = NULL;
+        *out_count = 0;
+        return ERR_OK;
+    }
+
+    // Convert to str_t array
+    str_t* names = calloc(tool_count, sizeof(str_t));
+    if (!names) {
+        *out_names = NULL;
+        *out_count = 0;
+        return ERR_OUT_OF_MEMORY;
+    }
+
+    for (uint32_t i = 0; i < tool_count; i++) {
+        names[i] = str_dup_cstr(tool_names[i], NULL);
+    }
+
+    *out_names = names;
+    *out_count = tool_count;
     return ERR_OK;
 }
 

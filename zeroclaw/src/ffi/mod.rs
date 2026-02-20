@@ -2,17 +2,98 @@
 // This module provides a C-compatible interface for the ZeroClaw agent
 
 use std::ffi::{CStr, CString};
+use std::io::Write;
 use std::os::raw::{c_char, c_double};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use serde::Deserialize;
+
 use crate::agent;
 use crate::config::Config;
-use crate::memory::{self, Memory};
-use crate::observability;
+use crate::memory::{self, Memory, MemoryCategory};
+use crate::observability::{self, Observer, ObserverEvent};
+use crate::providers::{self, ChatMessage, Provider};
 use crate::runtime;
-use crate::security::SecurityPolicy;
+use crate::security::{SecurityPolicy, AutonomyLevel};
 use crate::tools::{self, Tool};
+use crate::util::truncate_with_ellipsis;
+
+/// Simplified config structure for FFI - matches what C code generates
+#[derive(Debug, Deserialize)]
+struct FfiConfig {
+    api_key: Option<String>,
+    default_provider: Option<String>,
+    default_model: Option<String>,
+    default_temperature: Option<f64>,
+    workspace_dir: Option<String>,
+    memory: Option<FfiMemoryConfig>,
+    autonomy: Option<FfiAutonomyConfig>,
+    browser: Option<FfiBrowserConfig>,
+    composio: Option<FfiComposioConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FfiMemoryConfig {
+    backend: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FfiAutonomyConfig {
+    level: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct FfiBrowserConfig {
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct FfiComposioConfig {
+    enabled: bool,
+}
+
+impl FfiConfig {
+    /// Convert FFI config to full Config
+    fn to_config(self) -> Config {
+        let mut config = Config::default();
+
+        if let Some(api_key) = self.api_key {
+            config.api_key = Some(api_key);
+        }
+        if let Some(provider) = self.default_provider {
+            config.default_provider = Some(provider);
+        }
+        if let Some(model) = self.default_model {
+            config.default_model = Some(model);
+        }
+        if let Some(temp) = self.default_temperature {
+            config.default_temperature = temp;
+        }
+        if let Some(workspace) = self.workspace_dir {
+            config.workspace_dir = PathBuf::from(workspace);
+        }
+        if let Some(memory) = self.memory {
+            config.memory.backend = memory.backend;
+        }
+        if let Some(autonomy) = self.autonomy {
+            config.autonomy.level = match autonomy.level {
+                0 => AutonomyLevel::ReadOnly,
+                1 => AutonomyLevel::Supervised,
+                2 => AutonomyLevel::Full,
+                _ => AutonomyLevel::Supervised,
+            };
+        }
+        if let Some(browser) = self.browser {
+            config.browser.enabled = browser.enabled;
+        }
+        if let Some(composio) = self.composio {
+            config.composio.enabled = composio.enabled;
+        }
+
+        config
+    }
+}
 
 /// Opaque handle to agent runtime
 pub struct AgentRuntime {
@@ -31,6 +112,69 @@ pub enum ZcResult {
     InvalidArg = -2,
     NotInitialized = -3,
     OutOfMemory = -4,
+}
+
+/// Build system prompt with tool instructions
+fn build_system_prompt(config: &Config, tools: &[Box<dyn Tool>]) -> String {
+    let skills = crate::skills::load_skills(&config.workspace_dir);
+    let mut tool_descs: Vec<(&str, &str)> = vec![
+        (
+            "shell",
+            "Execute terminal commands. Use when: running local checks, build/test commands, diagnostics. Don't use when: a safer dedicated tool exists, or command is destructive without approval.",
+        ),
+        (
+            "file_read",
+            "Read file contents. Use when: inspecting project files, configs, logs. Don't use when: a targeted search is enough.",
+        ),
+        (
+            "file_write",
+            "Write file contents. Use when: applying focused edits, scaffolding files, updating docs/code. Don't use when: side effects are unclear or file ownership is uncertain.",
+        ),
+        (
+            "memory_store",
+            "Save to memory. Use when: preserving durable preferences, decisions, key context. Don't use when: information is transient/noisy/sensitive without need.",
+        ),
+        (
+            "memory_recall",
+            "Search memory. Use when: retrieving prior decisions, user preferences, historical context. Don't use when: answer is already in current context.",
+        ),
+        (
+            "memory_forget",
+            "Delete a memory entry. Use when: memory is incorrect/stale or explicitly requested for removal. Don't use when: impact is uncertain.",
+        ),
+    ];
+    tool_descs.push((
+        "screenshot",
+        "Capture a screenshot of the current screen. Returns file path and base64-encoded PNG. Use when: visual verification, UI inspection, debugging displays.",
+    ));
+    tool_descs.push((
+        "image_info",
+        "Read image file metadata (format, dimensions, size) and optionally base64-encode it. Use when: inspecting images, preparing visual data for analysis.",
+    ));
+    if config.browser.enabled {
+        tool_descs.push((
+            "browser_open",
+            "Open approved HTTPS URLs in Brave Browser (allowlist-only, no scraping)",
+        ));
+    }
+    if config.composio.enabled {
+        tool_descs.push((
+            "composio",
+            "Execute actions on 1000+ apps via Composio (Gmail, Notion, GitHub, Slack, etc.). Use action='list' to discover, 'execute' to run, 'connect' to OAuth.",
+        ));
+    }
+
+    let mut system_prompt = crate::channels::build_system_prompt(
+        &config.workspace_dir,
+        config.default_model.as_deref().unwrap_or("unknown"),
+        &tool_descs,
+        &skills,
+        Some(&config.identity),
+    );
+
+    // Append structured tool-use instructions with schemas
+    system_prompt.push_str(&agent::loop_::build_tool_instructions(tools));
+    system_prompt
 }
 
 /// Initialize ZeroClaw agent runtime
@@ -55,19 +199,29 @@ pub unsafe extern "C" fn zc_agent_init(
             Ok(s) => s,
             Err(_) => return ZcResult::InvalidArg,
         };
-        match serde_json::from_str(json_str) {
-            Ok(cfg) => cfg,
-            Err(_) => return ZcResult::InvalidArg,
+        // Try to parse as FFI config first (simplified format from C)
+        match serde_json::from_str::<FfiConfig>(json_str) {
+            Ok(ffi_cfg) => ffi_cfg.to_config(),
+            Err(e) => {
+                eprintln!("Failed to parse FFI config: {}", e);
+                return ZcResult::InvalidArg;
+            }
         }
     };
 
-    // Set workspace if provided
+    // Set workspace if provided (overrides config)
     if !workspace_dir.is_null() {
         let ws = match CStr::from_ptr(workspace_dir).to_str() {
             Ok(s) => s,
             Err(_) => return ZcResult::InvalidArg,
         };
         config.workspace_dir = PathBuf::from(ws);
+    }
+
+    // Ensure workspace directory exists
+    if let Err(e) = std::fs::create_dir_all(&config.workspace_dir) {
+        eprintln!("Failed to create workspace directory: {}", e);
+        return ZcResult::Error;
     }
 
     let security = Arc::new(SecurityPolicy::from_config(
@@ -115,7 +269,28 @@ pub unsafe extern "C" fn zc_agent_shutdown(handle: *mut AgentRuntime) {
     }
 }
 
-/// Run single message through agent
+/// Build context by searching memory for relevant entries
+async fn build_context(mem: &dyn Memory, user_msg: &str) -> String {
+    let mut context = String::new();
+
+    // Pull relevant memories for this message
+    if let Ok(entries) = mem.recall(user_msg, 5).await {
+        if !entries.is_empty() {
+            context.push_str("[Memory context]\n");
+            for entry in &entries {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut context,
+                    format_args!("- {}: {}\n", entry.key, entry.content),
+                );
+            }
+            context.push('\n');
+        }
+    }
+
+    context
+}
+
+/// Run single message through agent with proper tool support
 ///
 /// # Safety
 /// Caller must ensure handle is valid, message is null-terminated UTF-8, and out_response can be written to
@@ -163,33 +338,90 @@ pub unsafe extern "C" fn zc_agent_run_single(
         Err(_) => return ZcResult::Error,
     };
 
-    // Run the agent
+    // Run the agent with tool support
     let result = rt.block_on(async {
-        agent::run(
-            agent.config.clone(),
-            Some(msg.to_string()),
-            provider_override,
-            model_override,
-            temperature,
-        )
-        .await
+        let config = &agent.config;
+
+        // Wire up agnostic subsystems
+        let observer: Arc<dyn Observer> =
+            Arc::from(observability::create_observer(&config.observability));
+
+        // Resolve provider
+        let provider_name = provider_override
+            .as_deref()
+            .or(config.default_provider.as_deref())
+            .unwrap_or("openrouter");
+
+        let model_name = model_override
+            .as_deref()
+            .or(config.default_model.as_deref())
+            .unwrap_or("anthropic/claude-sonnet-4-20250514");
+
+        let provider: Box<dyn Provider> = providers::create_routed_provider(
+            provider_name,
+            config.api_key.as_deref(),
+            &config.reliability,
+            &config.model_routes,
+            model_name,
+        )?;
+
+        // Build system prompt with tool instructions
+        let system_prompt = build_system_prompt(config, &agent.tools);
+
+        // Inject memory context into user message
+        let context = build_context(agent.memory.as_ref(), msg).await;
+        let enriched = if context.is_empty() {
+            msg.to_string()
+        } else {
+            format!("{context}{msg}")
+        };
+
+        let mut history = vec![
+            ChatMessage::system(&system_prompt),
+            ChatMessage::user(&enriched),
+        ];
+
+        // Run agent turn with tools
+        let response = agent::loop_::agent_turn(
+            provider.as_ref(),
+            &mut history,
+            &agent.tools,
+            observer.as_ref(),
+            model_name,
+            if temperature == 0.0 { config.default_temperature } else { temperature },
+        ).await?;
+
+        // Auto-save to memory
+        if config.memory.auto_save {
+            use uuid::Uuid;
+            let user_key = format!("user_msg_{}", Uuid::new_v4());
+            let _ = agent.memory.store(&user_key, msg, MemoryCategory::Conversation).await;
+            let summary = truncate_with_ellipsis(&response, 100);
+            let response_key = format!("assistant_resp_{}", Uuid::new_v4());
+            let _ = agent.memory.store(&response_key, &summary, MemoryCategory::Daily).await;
+        }
+
+        Ok::<String, anyhow::Error>(response)
     });
 
     match result {
-        Ok(_) => {
-            // For now, return empty response - actual response is printed to stdout
-            let empty = match CString::new("") {
+        Ok(response) => {
+            // Return the response to C code
+            let cstr = match CString::new(response) {
                 Ok(s) => s,
                 Err(_) => return ZcResult::Error,
             };
-            *out_response = empty.into_raw();
+            *out_response = cstr.into_raw();
             ZcResult::Ok
         }
-        Err(_) => ZcResult::Error,
+        Err(e) => {
+            eprintln!("Agent error: {}", e);
+            ZcResult::Error
+        }
     }
 }
 
-/// Run interactive agent loop
+/// Run interactive agent loop with proper tool support
 ///
 /// # Safety
 /// Caller must ensure handle is valid
@@ -224,28 +456,145 @@ pub unsafe extern "C" fn zc_agent_run_interactive(
         }
     };
 
+    println!("🦀 ZeroClaw Interactive Mode");
+    println!("Type /quit to exit.\n");
+
     // Create tokio runtime
     let rt = match tokio::runtime::Runtime::new() {
         Ok(r) => r,
         Err(_) => return ZcResult::Error,
     };
 
-    // Run the agent
+    // Setup agent components
     let result = rt.block_on(async {
-        agent::run(
-            agent.config.clone(),
-            None,
-            provider_override,
-            model_override,
-            temperature,
+        let config = &agent.config;
+
+        // Wire up agnostic subsystems
+        let observer: Arc<dyn Observer> =
+            Arc::from(observability::create_observer(&config.observability));
+
+        // Resolve provider
+        let provider_name = provider_override
+            .as_deref()
+            .or(config.default_provider.as_deref())
+            .unwrap_or("openrouter");
+
+        let model_name = model_override
+            .as_deref()
+            .or(config.default_model.as_deref())
+            .unwrap_or("anthropic/claude-sonnet-4-20250514");
+
+        let provider: Box<dyn Provider> = providers::create_routed_provider(
+            provider_name,
+            config.api_key.as_deref(),
+            &config.reliability,
+            &config.model_routes,
+            model_name,
+        )?;
+
+        // Build system prompt with tool instructions
+        let system_prompt = build_system_prompt(config, &agent.tools);
+
+        Ok::<(Box<dyn Provider>, Arc<dyn Observer>, String, String), anyhow::Error>(
+            (provider, observer, model_name.to_string(), system_prompt)
         )
-        .await
     });
 
-    match result {
-        Ok(_) => ZcResult::Ok,
-        Err(_) => ZcResult::Error,
+    let (provider, observer, model_name, system_prompt): (Box<dyn Provider>, Arc<dyn Observer>, String, String) = match result {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Failed to initialize: {}", e);
+            return ZcResult::Error;
+        }
+    };
+
+    // Simple synchronous loop for FFI - read from stdin line by line
+    let stdin = std::io::stdin();
+    use std::io::BufRead;
+
+    // Persistent conversation history across turns
+    let mut history: Vec<ChatMessage> = vec![ChatMessage::system(&system_prompt)];
+
+    loop {
+        print!("> ");
+        let _ = std::io::stdout().flush();
+
+        let mut line = String::new();
+        match stdin.lock().read_line(&mut line) {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if line == "/quit" || line == "/exit" {
+                    break;
+                }
+
+                // Process message through agent with tools
+                let msg = line.to_string();
+                let config = &agent.config;
+                let temp = if temperature == 0.0 { config.default_temperature } else { temperature };
+
+                let result = rt.block_on(async {
+                    // Inject memory context
+                    let context = build_context(agent.memory.as_ref(), &msg).await;
+                    let enriched = if context.is_empty() {
+                        msg.clone()
+                    } else {
+                        format!("{context}{msg}")
+                    };
+
+                    // Add user message to history
+                    history.push(ChatMessage::user(&enriched));
+
+                    // Run agent turn with tools
+                    let response = agent::loop_::agent_turn(
+                        provider.as_ref(),
+                        &mut history,
+                        &agent.tools,
+                        observer.as_ref(),
+                        &model_name,
+                        temp,
+                    ).await;
+
+                    // Auto-save to memory
+                    if config.memory.auto_save {
+                        use uuid::Uuid;
+                        let user_key = format!("user_msg_{}", Uuid::new_v4());
+                        let _ = agent.memory.store(&user_key, &msg, MemoryCategory::Conversation).await;
+                    }
+
+                    response
+                });
+
+                match result {
+                    Ok(resp) => {
+                        println!("\n{}\n", resp);
+
+                        // Auto-save response
+                        if agent.config.memory.auto_save {
+                            let summary = truncate_with_ellipsis(&resp, 100);
+                            rt.block_on(async {
+                                use uuid::Uuid;
+                                let response_key = format!("assistant_resp_{}", Uuid::new_v4());
+                                let _ = agent.memory.store(&response_key, &summary, MemoryCategory::Daily).await;
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("\nError: {}\n", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to read input: {}", e);
+                break;
+            }
+        }
     }
+
+    ZcResult::Ok
 }
 
 /// Free a string returned by ZeroClaw

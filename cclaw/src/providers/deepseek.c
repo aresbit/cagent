@@ -166,6 +166,8 @@ static bool deepseek_is_connected(provider_t* provider) {
 static char* build_deepseek_request(const provider_t* provider,
                                     const chat_message_t* messages,
                                     uint32_t message_count,
+                                    const tool_def_t* tools,
+                                    uint32_t tool_count,
                                     const char* model,
                                     double temperature,
                                     bool stream) {
@@ -200,6 +202,51 @@ static char* build_deepseek_request(const provider_t* provider,
 
     // Stream
     json_object_set_bool(root, "stream", stream);
+
+    // Add tools if provided
+    if (tools && tool_count > 0) {
+        json_value_t* tools_arr = json_create_array();
+        for (uint32_t i = 0; i < tool_count; i++) {
+            json_value_t* tool_obj = json_create_object();
+            json_object_set_string(tool_obj, "type", "function");
+            
+            json_value_t* func_obj = json_create_object();
+            if (tools[i].name.data) {
+                char* name_copy = malloc(tools[i].name.len + 1);
+                if (name_copy) {
+                    memcpy(name_copy, tools[i].name.data, tools[i].name.len);
+                    name_copy[tools[i].name.len] = '\0';
+                    json_object_set_string(func_obj, "name", name_copy);
+                    free(name_copy);
+                }
+            }
+            if (tools[i].description.data) {
+                char* desc_copy = malloc(tools[i].description.len + 1);
+                if (desc_copy) {
+                    memcpy(desc_copy, tools[i].description.data, tools[i].description.len);
+                    desc_copy[tools[i].description.len] = '\0';
+                    json_object_set_string(func_obj, "description", desc_copy);
+                    free(desc_copy);
+                }
+            }
+            if (tools[i].parameters.data) {
+                char* params_copy = malloc(tools[i].parameters.len + 1);
+                if (params_copy) {
+                    memcpy(params_copy, tools[i].parameters.data, tools[i].parameters.len);
+                    params_copy[tools[i].parameters.len] = '\0';
+                    json_value_t* params_json = json_parse(params_copy);
+                    if (params_json) {
+                        json_object_set(func_obj, "parameters", params_json);
+                    }
+                    free(params_copy);
+                }
+            }
+            
+            json_object_set(tool_obj, "function", func_obj);
+            json_array_append(tools_arr, tool_obj);
+        }
+        json_object_set(root, "tools", tools_arr);
+    }
 
     // Enable search if configured
     deepseek_data_t* data = (deepseek_data_t*)provider->impl_data;
@@ -238,6 +285,37 @@ static err_t parse_deepseek_response(const char* json_str, chat_response_t* resp
             if (message) {
                 const char* content = json_object_get_string(message, "content", "");
                 response->content = (str_t){ .data = strdup(content), .len = strlen(content) };
+                
+                // Parse tool calls
+                json_array_t* tool_calls = json_object_get_array(message, "tool_calls");
+                if (tool_calls && json_array_length(tool_calls) > 0) {
+                    char* tool_calls_json = malloc(4096);
+                    if (tool_calls_json) {
+                        size_t offset = 0;
+                        offset += snprintf(tool_calls_json + offset, 4096 - offset, "[");
+                        
+                        for (size_t i = 0; i < json_array_length(tool_calls); i++) {
+                            json_value_t* tc = json_array_get(tool_calls, i);
+                            json_object_t* tc_obj = json_as_object(tc);
+                            if (tc_obj) {
+                                const char* tc_id = json_object_get_string(tc_obj, "id", "");
+                                json_object_t* func = json_object_get_object(tc_obj, "function");
+                                if (func) {
+                                    const char* func_name = json_object_get_string(func, "name", "");
+                                    const char* func_args = json_object_get_string(func, "arguments", "{}");
+                                    
+                                    if (i > 0) offset += snprintf(tool_calls_json + offset, 4096 - offset, ",");
+                                    offset += snprintf(tool_calls_json + offset, 4096 - offset,
+                                        "{\"id\":\"%s\",\"name\":\"%s\",\"arguments\":%s}",
+                                        tc_id, func_name, func_args);
+                                }
+                            }
+                        }
+                        
+                        offset += snprintf(tool_calls_json + offset, 4096 - offset, "]");
+                        response->tool_calls = (str_t){ .data = tool_calls_json, .len = strlen(tool_calls_json) };
+                    }
+                }
             }
 
             // Get finish reason
@@ -270,13 +348,10 @@ static err_t deepseek_chat(provider_t* provider,
                            const char* model,
                            double temperature,
                            chat_response_t** out_response) {
-    (void)tools;
-    (void)tool_count;
-
     if (!provider || !provider->http || !out_response) return ERR_INVALID_ARGUMENT;
 
     // Build request
-    char* request_body = build_deepseek_request(provider, messages, message_count, model, temperature, false);
+    char* request_body = build_deepseek_request(provider, messages, message_count, tools, tool_count, model, temperature, false);
     if (!request_body) return ERR_OUT_OF_MEMORY;
 
     // Make request
@@ -402,7 +477,7 @@ static err_t deepseek_chat_stream(provider_t* provider,
     if (!provider || !provider->http || !on_chunk) return ERR_INVALID_ARGUMENT;
 
     // Build streaming request
-    char* request_body = build_deepseek_request(provider, messages, message_count, model, temperature, true);
+    char* request_body = build_deepseek_request(provider, messages, message_count, NULL, 0, model, temperature, true);
     if (!request_body) return ERR_OUT_OF_MEMORY;
 
     // Build URL

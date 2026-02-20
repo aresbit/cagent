@@ -76,11 +76,17 @@ err_t cmd_agent_zeroclaw(config_t* config, int argc, char** argv) {
         return ERR_OUT_OF_MEMORY;
     }
 
-    // Initialize ZeroClaw runtime
+    // Initialize ZeroClaw runtime - use current directory as workspace
+    char cwd[1024];
+    const char* workspace = cwd;
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        workspace = ".";
+    }
+    
     zc_agent_runtime_t* runtime = NULL;
     zc_result_t result = zc_agent_init(
         config_json,
-        config->workspace_dir.data,
+        workspace,
         &runtime
     );
 
@@ -113,10 +119,12 @@ err_t cmd_agent_zeroclaw(config_t* config, int argc, char** argv) {
         );
 
         if (result == ZC_OK && response) {
-            printf("%s\n", response);
+            // Print response
+            printf("\n%s\n\n", response);
+            fflush(stdout);
             zc_free_string(response);
         } else {
-            fprintf(stderr, "Agent error: %d\n", result);
+            fprintf(stderr, "Agent error: %d, response: %p\n", result, (void*)response);
         }
     } else {
         // Interactive mode

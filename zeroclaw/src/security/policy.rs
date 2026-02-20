@@ -100,9 +100,7 @@ impl Default for SecurityPolicy {
             workspace_dir: PathBuf::from("."),
             workspace_only: true,
             allowed_commands: vec![
-                "git".into(),
-                "npm".into(),
-                "cargo".into(),
+                // File operations
                 "ls".into(),
                 "cat".into(),
                 "grep".into(),
@@ -112,6 +110,97 @@ impl Default for SecurityPolicy {
                 "wc".into(),
                 "head".into(),
                 "tail".into(),
+                "touch".into(),
+                "mkdir".into(),
+                "rm".into(),
+                "rmdir".into(),
+                "cp".into(),
+                "mv".into(),
+                "chmod".into(),
+                "chown".into(),
+                "ln".into(),
+                "readlink".into(),
+                "stat".into(),
+                "file".into(),
+                "which".into(),
+                "whereis".into(),
+                "type".into(),
+                "sort".into(),
+                "uniq".into(),
+                "awk".into(),
+                "sed".into(),
+                "cut".into(),
+                "tr".into(),
+                "tee".into(),
+                // System info
+                "env".into(),
+                "printenv".into(),
+                "date".into(),
+                "whoami".into(),
+                "hostname".into(),
+                "id".into(),
+                "uname".into(),
+                "uptime".into(),
+                "df".into(),
+                "du".into(),
+                "free".into(),
+                // Process
+                "ps".into(),
+                "top".into(),
+                "kill".into(),
+                "killall".into(),
+                // Build tools
+                "git".into(),
+                "npm".into(),
+                "yarn".into(),
+                "pnpm".into(),
+                "cargo".into(),
+                "make".into(),
+                "cmake".into(),
+                "gcc".into(),
+                "g++".into(),
+                "clang".into(),
+                "rustc".into(),
+                "go".into(),
+                "python".into(),
+                "python3".into(),
+                "pip".into(),
+                "pip3".into(),
+                "node".into(),
+                "bun".into(),
+                // Package managers
+                "apt".into(),
+                "apt-get".into(),
+                "yum".into(),
+                "dnf".into(),
+                "pacman".into(),
+                "brew".into(),
+                // Network
+                "curl".into(),
+                "wget".into(),
+                "ssh".into(),
+                "scp".into(),
+                "rsync".into(),
+                "ping".into(),
+                "netstat".into(),
+                "ss".into(),
+                "ip".into(),
+                // Text editors
+                "vim".into(),
+                "nano".into(),
+                "code".into(),
+                "subl".into(),
+                // Docker
+                "docker".into(),
+                "kubectl".into(),
+                // Misc
+                "tar".into(),
+                "zip".into(),
+                "unzip".into(),
+                "gzip".into(),
+                "gunzip".into(),
+                "bzip2".into(),
+                "xz".into(),
             ],
             forbidden_paths: vec![
                 // System directories (blocked even when workspace_only=false)
@@ -337,13 +426,18 @@ impl SecurityPolicy {
             return false;
         }
 
+        // Allow all commands in Full autonomy mode
+        if self.autonomy == AutonomyLevel::Full {
+            return true;
+        }
+
         // Block subshell/expansion operators — these allow hiding arbitrary
         // commands inside an allowed command (e.g. `echo $(rm -rf /)`)
         if command.contains('`') || command.contains("$(") || command.contains("${") {
             return false;
         }
 
-        // Block output redirections — they can write to arbitrary paths
+        // Block output redirections in Supervised mode
         if command.contains('>') {
             return false;
         }
