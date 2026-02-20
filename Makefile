@@ -2,7 +2,7 @@
 # 用于构建 CClaw (C) 和 ZeroClaw (Rust) 两个实现
 
 .PHONY: all build release debug test clean help
-.DEFAULT_GOAL := build
+.DEFAULT_GOAL := all
 
 # 颜色定义
 RED := \033[0;31m

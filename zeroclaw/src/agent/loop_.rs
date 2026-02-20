@@ -575,7 +575,7 @@ pub async fn run(
                 .await;
         }
     } else {
-        println!("🦀 ZeroClaw Interactive Mode");
+        println!("🦀 CClaw Interactive Mode");
         println!("Type /quit to exit.\n");
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);

@@ -472,7 +472,7 @@ pub unsafe extern "C" fn zc_agent_run_interactive(
         }
     };
 
-    println!("🦀 ZeroClaw Interactive Mode");
+    println!("🦀 CClaw Interactive Mode");
     println!("Type /quit to exit.\n");
 
     // Create tokio runtime
@@ -528,7 +528,7 @@ pub unsafe extern "C" fn zc_agent_run_interactive(
     use rustyline::Editor;
     use rustyline::history::DefaultHistory;
     
-    println!("🦀 ZeroClaw Interactive Mode");
+    println!("🦀 CClaw Interactive Mode");
     println!("Type /quit to exit.\n");
 
     // Create rustyline editor
