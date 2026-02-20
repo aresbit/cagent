@@ -1,6 +1,6 @@
-# CAgent 🦀
+# CAgent
 
-**Zero overhead. Zero compromise. 100% Portable AI Assistant Infrastructure**
+** 100% Portable AI Assistant **
 
 CAgent is an AI assistant infrastructure project with two implementations:
 - **CClaw**: Ultra-lightweight C implementation (~14MB)
@@ -19,6 +19,9 @@ CAgent is an AI assistant infrastructure project with two implementations:
 ```bash
 # Build
 make
+
+# config
+./build/bin/cclaw onboard
 
 # Run agent (interactive)
 ./build/bin/cclaw agent
@@ -59,15 +62,8 @@ Or create a config file at `~/.cclaw/config.json`:
 | Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-20250514 |
 | DeepSeek | `DEEPSEEK_API_KEY` | deepseek-chat |
 | OpenRouter | `OPENROUTER_API_KEY` | anthropic/claude-sonnet-4-20250514 |
-| Kimi | `KIMI_API_KEY` | moonshot-v1-8k |
+| Kimi | `KIMI_API_KEY` | kimi-v2.5 |
 
-## Downloads
-
-Pre-built binaries for v1.0.8:
-
-| Platform | File |
-|----------|------|
-| Linux | [cclaw-linux-amd64](https://github.com/aresbit/cagent/releases/latest) |
 
 ## Build from Source
 
@@ -88,8 +84,8 @@ cd cagent
 make
 
 # Or build individually
+cd ../zeroclaw && cargo build --release --lib  # Rust implementation
 cd cclaw && make        # C implementation
-cd ../zeroclaw && cargo build --release  # Rust implementation
 ```
 
 ## Project Structure
