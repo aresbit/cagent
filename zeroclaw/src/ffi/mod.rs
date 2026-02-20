@@ -128,7 +128,11 @@ fn build_system_prompt(config: &Config, tools: &[Box<dyn Tool>]) -> String {
         ),
         (
             "file_write",
-            "Write file contents. Use when: applying focused edits, scaffolding files, updating docs/code. Don't use when: side effects are unclear or file ownership is uncertain.",
+            "Write file contents. Use when: creating new files or completely replacing existing files. Don't use when: side effects are unclear or file ownership is uncertain.",
+        ),
+        (
+            "file_edit",
+            "Edit existing files: insert lines, delete lines, or replace content at specific line numbers. Use when: modifying specific parts of a file without rewriting the entire file. Parameters: path, operation (insert/delete/replace), line (1-based), content, end_line (optional).",
         ),
         (
             "memory_store",

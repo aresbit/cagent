@@ -1,6 +1,7 @@
 pub mod browser;
 pub mod browser_open;
 pub mod composio;
+pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
 pub mod image_info;
@@ -14,6 +15,7 @@ pub mod traits;
 pub use browser::BrowserTool;
 pub use browser_open::BrowserOpenTool;
 pub use composio::ComposioTool;
+pub use file_edit::FileEditTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
 pub use image_info::ImageInfoTool;
@@ -44,7 +46,8 @@ pub fn default_tools_with_runtime(
     vec![
         Box::new(ShellTool::new(security.clone(), runtime)),
         Box::new(FileReadTool::new(security.clone())),
-        Box::new(FileWriteTool::new(security)),
+        Box::new(FileWriteTool::new(security.clone())),
+        Box::new(FileEditTool::new(security)),
     ]
 }
 
@@ -76,6 +79,7 @@ pub fn all_tools_with_runtime(
         Box::new(ShellTool::new(security.clone(), runtime)),
         Box::new(FileReadTool::new(security.clone())),
         Box::new(FileWriteTool::new(security.clone())),
+        Box::new(FileEditTool::new(security.clone())),
         Box::new(MemoryStoreTool::new(memory.clone())),
         Box::new(MemoryRecallTool::new(memory.clone())),
         Box::new(MemoryForgetTool::new(memory)),
