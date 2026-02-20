@@ -472,8 +472,14 @@ pub unsafe extern "C" fn zc_agent_run_interactive(
         }
     };
 
-    println!("🦀 CClaw Interactive Mode");
-    println!("Type /quit to exit.\n");
+    println!("\x1b[2J\x1b[H"); // Clear screen
+    println!("\x1b[1m");
+    println!("╔══════════════════════════════════════════════════════════╗");
+    println!("║           CClaw Agent (Powered by ZeroClaw)            ║");
+    println!("╠══════════════════════════════════════════════════════════╣");
+    println!("║  Type /quit to exit  |  ZeroClaw v{}", env!("CARGO_PKG_VERSION"));
+    println!("╚══════════════════════════════════════════════════════════╝");
+    println!("\x1b[0m\n");
 
     // Create tokio runtime
     let rt = match tokio::runtime::Runtime::new() {
@@ -528,8 +534,14 @@ pub unsafe extern "C" fn zc_agent_run_interactive(
     use rustyline::Editor;
     use rustyline::history::DefaultHistory;
     
-    println!("🦀 CClaw Interactive Mode");
-    println!("Type /quit to exit.\n");
+    println!("\x1b[2J\x1b[H"); // Clear screen
+    println!("\x1b[1m");
+    println!("╔══════════════════════════════════════════════════════════╗");
+    println!("║           CClaw Agent (Powered by ZeroClaw)            ║");
+    println!("╠══════════════════════════════════════════════════════════╣");
+    println!("║  Type /quit to exit  |  ZeroClaw v{}", env!("CARGO_PKG_VERSION"));
+    println!("╚══════════════════════════════════════════════════════════╝");
+    println!("\x1b[0m\n");
 
     // Create rustyline editor
     let mut rl = match Editor::<(), DefaultHistory>::new() {

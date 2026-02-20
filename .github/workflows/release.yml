@@ -23,7 +23,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang make libcurl4-openssl-dev libsqlite3-dev libsodium-dev libuv1-dev
+          sudo apt-get install -y clang make libcurl4-openssl-dev libsqlite3-dev libsodium-dev libuv1-dev uuid-dev
 
       - name: Build ZeroClaw
         run: |

@@ -101,9 +101,9 @@ err_t cmd_agent_zeroclaw(config_t* config, int argc, char** argv) {
     printf("\033[2J\033[H"); // Clear screen
     printf("\033[1m");
     printf("╔══════════════════════════════════════════════════════════╗\n");
-    printf("║           CClaw Agent (Powered by ZeroClaw)              ║\n");
+    printf("║                  CClaw Agent                                    ║\n");
     printf("╠══════════════════════════════════════════════════════════╣\n");
-    printf("║  Type /quit to exit  |  ZeroClaw v%s\n", zc_version());
+    printf("║  Type /quit to exit  |  CClaw v%s\n", zc_version());
     printf("╚══════════════════════════════════════════════════════════╝\n");
     printf("\033[0m\n");
 
