@@ -4,6 +4,7 @@
 #ifndef ZEROCLAW_FFI_H
 #define ZEROCLAW_FFI_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -66,6 +67,22 @@ void zc_free_string(char* s);
 
 // Get ZeroClaw version string (static string, do not free)
 const char* zc_version(void);
+
+// Daemon management
+// config_toml: TOML configuration string (can be NULL to use defaults)
+// host: Server host (can be NULL for default 127.0.0.1)
+// port: Server port
+zc_result_t zc_daemon_start(const char* config_toml, const char* host, uint16_t port);
+
+// Stop the daemon
+zc_result_t zc_daemon_stop(void);
+
+// Get daemon status as JSON (must be freed with zc_free_string)
+// Returns JSON with component status, restart counts, etc.
+zc_result_t zc_daemon_status(char** state_json);
+
+// Check if daemon is running
+bool zc_daemon_is_running(void);
 
 #ifdef __cplusplus
 }

@@ -23,4 +23,7 @@ err_t cmd_tui(config_t* config, int argc, char** argv);
 err_t cmd_version(void);
 err_t cmd_help(const char* topic);
 
+// Build ZeroClaw TOML config for daemon
+char* build_zeroclaw_toml_config(const config_t* config);
+
 #endif // CCLAW_CLI_COMMANDS_H

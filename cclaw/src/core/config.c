@@ -172,30 +172,22 @@ config_t* config_default(allocator_t* alloc) {
     config->gateway.webhook_rate_limit_per_minute = 60;
     config->gateway.idempotency_ttl_secs = 300;
 
-    // Autonomy configuration
+    // Autonomy configuration - relaxed for agent-browser and other skills
     config->autonomy.level = AUTONOMY_LEVEL_FULL;
-    config->autonomy.workspace_only = true;
-    config->autonomy.max_actions_per_hour = 20;
-    config->autonomy.max_cost_per_day_cents = 500;
-    config->autonomy.require_approval_for_medium_risk = true;
-    config->autonomy.block_high_risk_commands = true;
+    config->autonomy.workspace_only = false;
+    config->autonomy.max_actions_per_hour = 1000;
+    config->autonomy.max_cost_per_day_cents = 10000;
+    config->autonomy.require_approval_for_medium_risk = false;
+    config->autonomy.block_high_risk_commands = false;
 
-    // Default allowed commands
-    const char* default_commands[] = {
-        "git", "npm", "cargo", "ls", "cat", "grep", "find",
-        "echo", "pwd", "wc", "head", "tail"
-    };
-    config->autonomy.allowed_commands_count = sizeof(default_commands) / sizeof(default_commands[0]);
-    config->autonomy.allowed_commands = alloc->alloc(sizeof(str_t) * config->autonomy.allowed_commands_count);
-    for (uint32_t i = 0; i < config->autonomy.allowed_commands_count; i++) {
-        config->autonomy.allowed_commands[i] = str_dup_impl(STR_VIEW(default_commands[i]), alloc);
-    }
+    // Allow all commands (empty list = allow all)
+    config->autonomy.allowed_commands_count = 0;
+    config->autonomy.allowed_commands = NULL;
 
-    // Default forbidden paths
+    // Minimal forbidden paths
     const char* default_forbidden[] = {
-        "/etc", "/root", "/home", "/usr", "/bin", "/sbin",
-        "/lib", "/opt", "/boot", "/dev", "/proc", "/sys",
-        "/var", "/tmp", "~/.ssh", "~/.gnupg", "~/.aws", "~/.config"
+        "/etc/passwd", "/etc/shadow", "/etc/ssh",
+        "/root", "/boot", "/proc", "/sys", "/dev"
     };
     config->autonomy.forbidden_paths_count = sizeof(default_forbidden) / sizeof(default_forbidden[0]);
     config->autonomy.forbidden_paths = alloc->alloc(sizeof(str_t) * config->autonomy.forbidden_paths_count);

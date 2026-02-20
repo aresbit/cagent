@@ -138,14 +138,15 @@ err_t cmd_agent(config_t* config, int argc, char** argv) {
 }
 
 // ============================================================================
-// Daemon Command
+// Daemon Command - Using ZeroClaw FFI
 // ============================================================================
 
-err_t cmd_daemon(config_t* config, int argc, char** argv) {
-    (void)config;
+#include "zeroclaw_ffi.h"
 
-    daemon_config_t daemon_config = daemon_config_default();
+err_t cmd_daemon(config_t* config, int argc, char** argv) {
     const char* action = "start";
+    uint16_t port = 8080;
+    const char* host = "127.0.0.1";
 
     // Parse arguments
     for (int i = 0; i < argc; i++) {
@@ -157,83 +158,104 @@ err_t cmd_daemon(config_t* config, int argc, char** argv) {
             action = "restart";
         } else if (strcmp(argv[i], "status") == 0) {
             action = "status";
-        } else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--pidfile") == 0) && i + 1 < argc) {
-            daemon_config.pid_file = STR_VIEW(argv[i + 1]);
+        } else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--port") == 0) && i + 1 < argc) {
+            port = (uint16_t)atoi(argv[i + 1]);
+            i++;
+        } else if ((strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--host") == 0) && i + 1 < argc) {
+            host = argv[i + 1];
+            i++;
         }
     }
 
-    char* pid_path = strndup(daemon_config.pid_file.data, daemon_config.pid_file.len);
-
     if (strcmp(action, "start") == 0) {
-        if (daemon_is_running(pid_path)) {
+        if (zc_daemon_is_running()) {
             printf("Daemon is already running.\n");
-            free(pid_path);
             return ERR_ALREADY_EXISTS;
         }
 
-        printf("Starting CClaw daemon...\n");
+        printf("Starting ZeroClaw daemon...\n");
 
-        daemon_t* daemon = NULL;
-        err_t err = daemon_create(&daemon_config, &daemon);
-        if (err != ERR_OK) {
-            free(pid_path);
-            return err;
+        // Build TOML config
+        char* config_toml = build_zeroclaw_toml_config(config);
+        if (!config_toml) {
+            fprintf(stderr, "Failed to build configuration\n");
+            return ERR_OUT_OF_MEMORY;
         }
 
-        err = daemon_start(daemon);
-        if (err != ERR_OK) {
-            fprintf(stderr, "Failed to start daemon: %s\n", error_to_string(err));
-            daemon_destroy(daemon);
-            free(pid_path);
-            return err;
+        // Start daemon via FFI
+        zc_result_t result = zc_daemon_start(config_toml, host, port);
+        free(config_toml);
+
+        if (result != ZC_OK) {
+            fprintf(stderr, "Failed to start daemon: %d\n", result);
+            return ERR_FAILED;
         }
 
-        printf("✓ Daemon started (PID: %d)\n", (int)daemon->pid);
+        printf("✓ ZeroClaw daemon started\n");
+        printf("   Gateway: http://%s:%d\n", host, port);
+        printf("   Components: gateway, channels, heartbeat, scheduler\n");
+        printf("   Press Ctrl+C to stop\n");
 
-        // Run daemon
-        daemon_run(daemon);
-
-        // Cleanup
-        daemon_stop(daemon);
-        daemon_destroy(daemon);
+        // Note: In this implementation, the daemon runs in a background thread
+        // So we just return success after starting it
 
     } else if (strcmp(action, "stop") == 0) {
-        if (!daemon_is_running(pid_path)) {
+        if (!zc_daemon_is_running()) {
             printf("Daemon is not running.\n");
-            free(pid_path);
             return ERR_NOT_FOUND;
         }
 
-        printf("Stopping CClaw daemon...\n");
-        err_t err = daemon_kill(pid_path);
-        if (err == ERR_OK) {
+        printf("Stopping ZeroClaw daemon...\n");
+        zc_result_t result = zc_daemon_stop();
+        if (result == ZC_OK) {
             printf("✓ Daemon stopped\n");
         } else {
-            fprintf(stderr, "Failed to stop daemon: %s\n", error_to_string(err));
+            fprintf(stderr, "Failed to stop daemon: %d\n", result);
+            return ERR_FAILED;
         }
 
     } else if (strcmp(action, "restart") == 0) {
-        if (daemon_is_running(pid_path)) {
+        if (zc_daemon_is_running()) {
             printf("Stopping daemon...\n");
-            daemon_kill(pid_path);
-            sleep(1);
+            zc_daemon_stop();
         }
 
-        printf("Starting CClaw daemon...\n");
-        // (Restart logic same as start)
+        printf("Starting ZeroClaw daemon...\n");
+
+        // Build TOML config
+        char* config_toml = build_zeroclaw_toml_config(config);
+        if (!config_toml) {
+            fprintf(stderr, "Failed to build configuration\n");
+            return ERR_OUT_OF_MEMORY;
+        }
+
+        zc_result_t result = zc_daemon_start(config_toml, host, port);
+        free(config_toml);
+
+        if (result != ZC_OK) {
+            fprintf(stderr, "Failed to start daemon: %d\n", result);
+            return ERR_FAILED;
+        }
+
+        printf("✓ Daemon restarted\n");
 
     } else if (strcmp(action, "status") == 0) {
-        if (daemon_is_running(pid_path)) {
-            pid_t pid;
-            if (pidfile_read(pid_path, &pid) == ERR_OK) {
-                printf("Daemon is running (PID: %d)\n", (int)pid);
+        if (zc_daemon_is_running()) {
+            printf("ZeroClaw daemon is running\n");
+
+            // Get detailed status
+            char* state_json = NULL;
+            zc_result_t result = zc_daemon_status(&state_json);
+            if (result == ZC_OK && state_json) {
+                printf("\nStatus:\n%s\n", state_json);
+                free(state_json);
             }
         } else {
             printf("Daemon is not running.\n");
+            return ERR_NOT_FOUND;
         }
     }
 
-    free(pid_path);
     return ERR_OK;
 }
 

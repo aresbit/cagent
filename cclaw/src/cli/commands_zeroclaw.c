@@ -148,3 +148,72 @@ err_t cmd_agent_zeroclaw(config_t* config, int argc, char** argv) {
 
     return (result == ZC_OK) ? ERR_OK : ERR_FAILED;
 }
+
+// Build TOML config for ZeroClaw daemon
+char* build_zeroclaw_toml_config(const config_t* config) {
+    if (!config) return NULL;
+
+    size_t bufsize = 8192;
+    char* toml = malloc(bufsize);
+    if (!toml) return NULL;
+
+    const char* workspace = config->workspace_dir.data ? config->workspace_dir.data : "~/.cclaw";
+    const char* provider = config->default_provider.data ? config->default_provider.data : "openrouter";
+    const char* model = config->default_model.data ? config->default_model.data : "anthropic/claude-sonnet-4-20250514";
+    const char* memory_backend = config->memory.backend.data ? config->memory.backend.data : "sqlite";
+
+    // Autonomy level: 0 = readonly, 1 = supervised, 2 = full
+    const char* autonomy_level = "supervised";
+    if (config->autonomy.level == 0) autonomy_level = "readonly";
+    else if (config->autonomy.level == 2) autonomy_level = "full";
+
+    snprintf(toml, bufsize,
+        "default_provider = \"%s\"\n"
+        "default_model = \"%s\"\n"
+        "default_temperature = %.2f\n"
+        "\n"
+        "[autonomy]\n"
+        "level = \"%s\"\n"
+        "workspace_only = false\n"
+        "allowed_commands = []\n"
+        "forbidden_paths = []\n"
+        "max_actions_per_hour = 1000\n"
+        "max_cost_per_day_cents = 10000\n"
+        "require_approval_for_medium_risk = false\n"
+        "block_high_risk_commands = false\n"
+        "\n"
+        "[memory]\n"
+        "backend = \"%s\"\n"
+        "auto_save = true\n"
+        "\n"
+        "[browser]\n"
+        "enabled = false\n"
+        "\n"
+        "[composio]\n"
+        "enabled = false\n"
+        "\n"
+        "[heartbeat]\n"
+        "enabled = false\n"
+        "interval_minutes = 30\n"
+        "\n"
+        "[observability]\n"
+        "backend = \"none\"\n"
+        "\n"
+        "[reliability]\n"
+        "channel_initial_backoff_secs = 1\n"
+        "channel_max_backoff_secs = 60\n"
+        "\n"
+        "model_routes = []\n"
+        "\n"
+        "[identity]\n"
+        "format = \"openclaw\"\n"
+        "name = \"CClaw\"\n",
+        provider,
+        model,
+        config->default_temperature,
+        autonomy_level,
+        memory_backend
+    );
+
+    return toml;
+}

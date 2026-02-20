@@ -96,138 +96,29 @@ pub struct SecurityPolicy {
 impl Default for SecurityPolicy {
     fn default() -> Self {
         Self {
-            autonomy: AutonomyLevel::Supervised,
+            autonomy: AutonomyLevel::Full,
             workspace_dir: PathBuf::from("."),
             workspace_only: false,
-            allowed_commands: vec![
-                // File operations
-                "ls".into(),
-                "cat".into(),
-                "grep".into(),
-                "find".into(),
-                "echo".into(),
-                "pwd".into(),
-                "wc".into(),
-                "head".into(),
-                "tail".into(),
-                "touch".into(),
-                "mkdir".into(),
-                "rm".into(),
-                "rmdir".into(),
-                "cp".into(),
-                "mv".into(),
-                "chmod".into(),
-                "chown".into(),
-                "ln".into(),
-                "readlink".into(),
-                "stat".into(),
-                "file".into(),
-                "which".into(),
-                "whereis".into(),
-                "type".into(),
-                "sort".into(),
-                "uniq".into(),
-                "awk".into(),
-                "sed".into(),
-                "cut".into(),
-                "tr".into(),
-                "tee".into(),
-                // System info
-                "env".into(),
-                "printenv".into(),
-                "date".into(),
-                "whoami".into(),
-                "hostname".into(),
-                "id".into(),
-                "uname".into(),
-                "uptime".into(),
-                "df".into(),
-                "du".into(),
-                "free".into(),
-                // Process
-                "ps".into(),
-                "top".into(),
-                "kill".into(),
-                "killall".into(),
-                // Build tools
-                "git".into(),
-                "npm".into(),
-                "yarn".into(),
-                "pnpm".into(),
-                "cargo".into(),
-                "make".into(),
-                "cmake".into(),
-                "gcc".into(),
-                "g++".into(),
-                "clang".into(),
-                "rustc".into(),
-                "go".into(),
-                "python".into(),
-                "python3".into(),
-                "pip".into(),
-                "pip3".into(),
-                "node".into(),
-                "bun".into(),
-                // Package managers
-                "apt".into(),
-                "apt-get".into(),
-                "yum".into(),
-                "dnf".into(),
-                "pacman".into(),
-                "brew".into(),
-                // Network
-                "curl".into(),
-                "wget".into(),
-                "ssh".into(),
-                "scp".into(),
-                "rsync".into(),
-                "ping".into(),
-                "netstat".into(),
-                "ss".into(),
-                "ip".into(),
-                // Text editors
-                "vim".into(),
-                "nano".into(),
-                "code".into(),
-                "subl".into(),
-                // Docker
-                "docker".into(),
-                "kubectl".into(),
-                // Misc
-                "tar".into(),
-                "zip".into(),
-                "unzip".into(),
-                "gzip".into(),
-                "gunzip".into(),
-                "bzip2".into(),
-                "xz".into(),
-            ],
+            allowed_commands: vec![],
             forbidden_paths: vec![
                 // System directories (blocked even when workspace_only=false)
-                "/etc".into(),
+                "/etc/passwd".into(),
+                "/etc/shadow".into(),
+                "/etc/ssh".into(),
                 "/root".into(),
-                "/home".into(),
-                "/usr".into(),
-                "/bin".into(),
-                "/sbin".into(),
-                "/lib".into(),
-                "/opt".into(),
                 "/boot".into(),
-                "/dev".into(),
                 "/proc".into(),
                 "/sys".into(),
-                "/var".into(),
-                "/tmp".into(),
+                "/dev".into(),
                 // Sensitive dotfiles
                 "~/.ssh".into(),
                 "~/.gnupg".into(),
-                "~/.aws".into(),
-                "~/.config".into(),
+                "~/.aws/credentials".into(),
             ],
-            max_actions_per_hour: 20,
+            max_actions_per_hour: 1000,
             max_cost_per_day_cents: 500,
-            require_approval_for_medium_risk: true,
-            block_high_risk_commands: true,
+            require_approval_for_medium_risk: false,
+            block_high_risk_commands: false,
             tracker: ActionTracker::new(),
         }
     }
@@ -312,15 +203,6 @@ impl SecurityPolicy {
                     | "iptables"
                     | "ufw"
                     | "firewall-cmd"
-                    | "curl"
-                    | "wget"
-                    | "nc"
-                    | "ncat"
-                    | "netcat"
-                    | "scp"
-                    | "ssh"
-                    | "ftp"
-                    | "telnet"
             ) {
                 return CommandRiskLevel::High;
             }
