@@ -65,8 +65,8 @@ impl Default for SecurityPolicy {
 
 ### 验证步骤
 ```bash
-cd /home/ares/yyscode/cagent/zeroclaw
-cargo build --release
+cd ./cagent/zeroclaw
+cargo build --release --lib
 # 测试浏览器技能可以执行
 # 测试 curl 命令可以执行
 ```

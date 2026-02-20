@@ -18,7 +18,7 @@ brew install curl sqlite libsodium libuv ossp-uuid
 ### 2. 编译
 
 ```bash
-cd /data/data/com.termux/files/home/yyscode/dev216/cclaw
+cd ./cclaw
 make clean && make
 ```
 

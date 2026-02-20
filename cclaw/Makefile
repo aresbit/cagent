@@ -11,7 +11,7 @@ TESTS_DIR := tests
 THIRD_PARTY_DIR := third_party
 
 # ZeroClaw Rust library
-ZEROCLAW_DIR := ~/yyscode/cagent/zeroclaw
+ZEROCLAW_DIR := ../zeroclaw
 ZEROCLAW_LIB := $(ZEROCLAW_DIR)/target/release/libzeroclaw.a
 ZEROCLAW_HEADER := $(INCLUDE_DIR)/zeroclaw_ffi.h
 
