@@ -14,11 +14,11 @@
 #include "runtime/agent_loop.h"
 
 // Version information
-#define CCLAW_VERSION_MAJOR 0
-#define CCLAW_VERSION_MINOR 1
+#define CCLAW_VERSION_MAJOR 1
+#define CCLAW_VERSION_MINOR 0
 #define CCLAW_VERSION_PATCH 0
 
-#define CCLAW_VERSION_STRING "0.1.0"
+#define CCLAW_VERSION_STRING "1.0.0"
 
 // Platform detection
 #ifdef _WIN32

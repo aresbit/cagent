@@ -326,6 +326,34 @@ If you find this project useful, consider supporting the development:
 
 <a href="https://buymeacoffee.com/argenistherose"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-yellow.svg?style=for-the-badge&logo=buy-me-a-coffee" alt="Buy Me a Coffee" /></a>
 
+## Downloads / Releases
+
+Pre-built binaries for v1.0.0 are available on the [GitHub Releases](https://github.com/theonlyhennygod/cagent/releases) page:
+
+| Platform | File | Architecture |
+|----------|------|--------------|
+| Linux | `cclaw-linux-amd64` | x86_64 |
+| macOS | `cclaw-macos-arm64` | Apple Silicon (M1/M2/M3) |
+| macOS | `cclaw-macos-x86_64` | Intel |
+| Windows | `cclaw-windows.exe` | x86_64 (coming soon) |
+
+### Build from Source
+
+```bash
+# Clone and build
+git clone https://github.com/theonlyhennygod/cagent.git
+cd cagent
+make
+
+# Or build individual components
+cd zeroclaw && cargo build --release --lib # Rust implementation
+cd cclaw && make        # C implementation
+```
+
+### Cross-Compilation
+
+This project uses GitHub Actions for cross-platform builds. See [.github/workflows/release.yml](.github/workflows/release.yml) for build configurations.
+
 ---
 
 **CAgent Project** — Zero overhead. Zero compromise. Deploy anywhere. Swap anything. 🦀
