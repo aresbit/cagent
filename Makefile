@@ -98,7 +98,7 @@ debug: cclaw-debug zeroclaw-debug
 	@echo "$(GREEN)✓ 所有项目构建完成 (debug)$(NC)"
 
 # 构建 CClaw (release)
-cclaw: $(BUILD_DIR)
+cclaw: zeroclaw $(BUILD_DIR)
 	@echo "$(YELLOW)=== 构建 CClaw (release) ===$(NC)"
 	cd $(CCLAW_DIR) && $(MAKE)
 	@mkdir -p $(BIN_DIR)
@@ -106,7 +106,7 @@ cclaw: $(BUILD_DIR)
 	@echo "$(GREEN)✓ CClaw 构建完成 -> $(BIN_DIR)/cclaw$(NC)"
 
 # 构建 CClaw (debug)
-cclaw-debug: $(BUILD_DIR)
+cclaw-debug: zeroclaw-debug $(BUILD_DIR)
 	@echo "$(YELLOW)=== 构建 CClaw (debug) ===$(NC)"
 	cd $(CCLAW_DIR) && $(MAKE) debug=1
 	@cp -f $(CCLAW_DIR)/bin/cclaw-debug $(BIN_DIR)/cclaw-debug 2>/dev/null || true

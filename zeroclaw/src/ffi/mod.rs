@@ -475,7 +475,7 @@ pub unsafe extern "C" fn zc_agent_run_interactive(
     println!("\x1b[2J\x1b[H"); // Clear screen
     println!("\x1b[1m");
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║           CClaw Agent (Powered by ZeroClaw)            ║");
+    println!("║               CClaw Agent                                 ");
     println!("╠══════════════════════════════════════════════════════════╣");
     println!("║  Type /quit to exit  |  ZeroClaw v{}", env!("CARGO_PKG_VERSION"));
     println!("╚══════════════════════════════════════════════════════════╝");
@@ -537,7 +537,7 @@ pub unsafe extern "C" fn zc_agent_run_interactive(
     println!("\x1b[2J\x1b[H"); // Clear screen
     println!("\x1b[1m");
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║           CClaw Agent (Powered by ZeroClaw)            ║");
+    println!("║                     CClaw Agent                           ");
     println!("╠══════════════════════════════════════════════════════════╣");
     println!("║  Type /quit to exit  |  ZeroClaw v{}", env!("CARGO_PKG_VERSION"));
     println!("╚══════════════════════════════════════════════════════════╝");
