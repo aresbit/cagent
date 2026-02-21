@@ -1,0 +1,36 @@
+{
+  "components": {
+    "channels": {
+      "last_error": null,
+      "last_ok": "2026-02-21T01:28:45.266531619+00:00",
+      "restart_count": 0,
+      "status": "ok",
+      "updated_at": "2026-02-21T01:28:45.266524984+00:00"
+    },
+    "daemon": {
+      "last_error": null,
+      "last_ok": "2026-02-21T01:28:45.266434609+00:00",
+      "restart_count": 0,
+      "status": "ok",
+      "updated_at": "2026-02-21T01:28:45.266394241+00:00"
+    },
+    "gateway": {
+      "last_error": "Address already in use (os error 98)",
+      "last_ok": "2026-02-21T01:29:00.273808700+00:00",
+      "restart_count": 5,
+      "status": "error",
+      "updated_at": "2026-02-21T01:29:00.273926942+00:00"
+    },
+    "scheduler": {
+      "last_error": null,
+      "last_ok": "2026-02-21T01:28:45.266722775+00:00",
+      "restart_count": 0,
+      "status": "ok",
+      "updated_at": "2026-02-21T01:28:45.266718096+00:00"
+    }
+  },
+  "pid": 695583,
+  "updated_at": "2026-02-21T01:29:10.268138504+00:00",
+  "uptime_seconds": 25,
+  "written_at": "2026-02-21T01:29:10.268199546+00:00"
+}

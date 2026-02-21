@@ -279,15 +279,38 @@ curl -H "Authorization: Bearer $API_KEY" \
 
 ### 3. 守护进程无法启动
 
+**注意**: 已修复 daemon start 闪退问题。现在 `cclaw daemon start` 会正确 fork 到后台并保持运行。
+
 ```bash
 # 检查 PID 文件
 rm ~/.cclaw/daemon.pid
 
-# 手动启动查看错误
-./bin/cclaw daemon start
+# 手动启动查看错误（前台模式）
+./bin/cclaw daemon start -f
 ```
 
-### 4. TUI 显示异常
+### 4. Telegram Bot 配置
+
+编辑 `~/.cclaw/config.json` 添加 telegram 配置：
+
+```json
+{
+  "channels": {
+    "cli": true,
+    "telegram": {
+      "bot_token": "YOUR_BOT_TOKEN",
+      "allowed_users": ["your_username"]
+    }
+  }
+}
+```
+
+然后重启 daemon：
+```bash
+./bin/cclaw daemon restart
+```
+
+### 5. TUI 显示异常
 
 ```bash
 # 检查终端支持

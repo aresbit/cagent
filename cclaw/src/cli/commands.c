@@ -13,6 +13,82 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <errno.h>
+
+#define DAEMON_PID_FILE "~/.cclaw/daemon.pid"
+
+// ============================================================================
+// PID File Helpers
+// ============================================================================
+
+static char* expand_path(const char* path) {
+    if (path[0] == '~') {
+        const char* home = getenv("HOME");
+        if (!home) return NULL;
+        char* expanded = malloc(strlen(home) + strlen(path));
+        if (expanded) {
+            sprintf(expanded, "%s%s", home, path + 1);
+        }
+        return expanded;
+    }
+    return strdup(path);
+}
+
+static int pidfile_write(const char* path, pid_t pid) {
+    char* expanded = expand_path(path);
+    if (!expanded) return -1;
+
+    // Ensure directory exists
+    char* dir = strdup(expanded);
+    char* last_slash = strrchr(dir, '/');
+    if (last_slash && last_slash != dir) {
+        *last_slash = '\0';
+        mkdir(dir, 0755);
+    }
+    free(dir);
+
+    FILE* f = fopen(expanded, "w");
+    if (!f) {
+        free(expanded);
+        return -1;
+    }
+    fprintf(f, "%d\n", (int)pid);
+    fclose(f);
+    free(expanded);
+    return 0;
+}
+
+static pid_t pidfile_read_pid(const char* path) {
+    char* expanded = expand_path(path);
+    if (!expanded) return -1;
+
+    FILE* f = fopen(expanded, "r");
+    if (!f) {
+        free(expanded);
+        return -1;
+    }
+    int pid;
+    int n = fscanf(f, "%d", &pid);
+    fclose(f);
+    free(expanded);
+    return (n == 1) ? pid : -1;
+}
+
+static int pidfile_remove_local(const char* path) {
+    char* expanded = expand_path(path);
+    if (!expanded) return -1;
+    int result = unlink(expanded);
+    free(expanded);
+    return result;
+}
+
+static bool is_process_running(pid_t pid) {
+    return (kill(pid, 0) == 0);
+}
 
 // ============================================================================
 // Utility Functions
@@ -142,11 +218,21 @@ err_t cmd_agent(config_t* config, int argc, char** argv) {
 // ============================================================================
 
 #include "zeroclaw_ffi.h"
+#include <signal.h>
+
+// Global flag for signal handling
+static volatile int g_daemon_should_stop = 0;
+
+static void daemon_signal_handler(int sig) {
+    (void)sig;
+    g_daemon_should_stop = 1;
+}
 
 err_t cmd_daemon(config_t* config, int argc, char** argv) {
     const char* action = "start";
     uint16_t port = 8080;
     const char* host = "127.0.0.1";
+    bool foreground = false;
 
     // Parse arguments
     for (int i = 0; i < argc; i++) {
@@ -158,6 +244,8 @@ err_t cmd_daemon(config_t* config, int argc, char** argv) {
             action = "restart";
         } else if (strcmp(argv[i], "status") == 0) {
             action = "status";
+        } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--foreground") == 0) {
+            foreground = true;
         } else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--port") == 0) && i + 1 < argc) {
             port = (uint16_t)atoi(argv[i + 1]);
             i++;
@@ -168,12 +256,38 @@ err_t cmd_daemon(config_t* config, int argc, char** argv) {
     }
 
     if (strcmp(action, "start") == 0) {
-        if (zc_daemon_is_running()) {
-            printf("Daemon is already running.\n");
+        // Check if already running via PID file
+        pid_t existing_pid = pidfile_read_pid(DAEMON_PID_FILE);
+        if (existing_pid > 0 && is_process_running(existing_pid)) {
+            printf("Daemon is already running (PID: %d).\n", (int)existing_pid);
             return ERR_ALREADY_EXISTS;
         }
 
         printf("Starting ZeroClaw daemon...\n");
+
+        if (!foreground) {
+            // Daemonize: fork to background
+            pid_t pid = fork();
+            if (pid < 0) {
+                perror("fork");
+                return ERR_FAILED;
+            }
+            if (pid > 0) {
+                // Parent process: write PID file and exit
+                int write_result = pidfile_write(DAEMON_PID_FILE, pid);
+                if (write_result != 0) {
+                    fprintf(stderr, "Warning: Failed to write PID file: %s\n", strerror(errno));
+                }
+                printf("✓ ZeroClaw daemon started (PID: %d)\n", (int)pid);
+                printf("   Gateway: http://%s:%d\n", host, port);
+                printf("   Components: gateway, channels, heartbeat, scheduler\n");
+                printf("   Run 'cclaw daemon stop' to stop\n");
+                fflush(stdout);
+                return ERR_OK;
+            }
+            // Child process: continue execution
+            setsid();  // Create new session
+        }
 
         // Build TOML config
         char* config_toml = build_zeroclaw_toml_config(config);
@@ -191,38 +305,101 @@ err_t cmd_daemon(config_t* config, int argc, char** argv) {
             return ERR_FAILED;
         }
 
-        printf("✓ ZeroClaw daemon started\n");
-        printf("   Gateway: http://%s:%d\n", host, port);
-        printf("   Components: gateway, channels, heartbeat, scheduler\n");
-        printf("   Press Ctrl+C to stop\n");
-
-        // Note: In this implementation, the daemon runs in a background thread
-        // So we just return success after starting it
-
-    } else if (strcmp(action, "stop") == 0) {
-        if (!zc_daemon_is_running()) {
-            printf("Daemon is not running.\n");
-            return ERR_NOT_FOUND;
+        if (foreground) {
+            printf("✓ ZeroClaw daemon started\n");
+            printf("   Gateway: http://%s:%d\n", host, port);
+            printf("   Components: gateway, channels, heartbeat, scheduler\n");
+            printf("   Press Ctrl+C to stop\n");
         }
 
-        printf("Stopping ZeroClaw daemon...\n");
-        zc_result_t result = zc_daemon_stop();
-        if (result == ZC_OK) {
-            printf("✓ Daemon stopped\n");
-        } else {
-            fprintf(stderr, "Failed to stop daemon: %d\n", result);
-            return ERR_FAILED;
+        // Setup signal handlers to gracefully stop daemon
+        signal(SIGINT, daemon_signal_handler);
+        signal(SIGTERM, daemon_signal_handler);
+
+        // Keep the process running to maintain the tokio runtime
+        while (!g_daemon_should_stop && zc_daemon_is_running()) {
+            sleep(1);
         }
 
-    } else if (strcmp(action, "restart") == 0) {
+        // Stop daemon if still running
         if (zc_daemon_is_running()) {
-            printf("Stopping daemon...\n");
             zc_daemon_stop();
         }
 
+        if (foreground) {
+            printf("\nDaemon stopped.\n");
+        }
+
+        // Remove PID file
+        pidfile_remove_local(DAEMON_PID_FILE);
+
+    } else if (strcmp(action, "stop") == 0) {
+        pid_t pid = pidfile_read_pid(DAEMON_PID_FILE);
+        if (pid <= 0 || !is_process_running(pid)) {
+            printf("Daemon is not running.\n");
+            pidfile_remove_local(DAEMON_PID_FILE);
+            return ERR_NOT_FOUND;
+        }
+
+        printf("Stopping ZeroClaw daemon (PID: %d)...\n", (int)pid);
+
+        // Send SIGTERM to the daemon process
+        if (kill(pid, SIGTERM) != 0) {
+            perror("kill");
+            return ERR_FAILED;
+        }
+
+        // Wait for process to exit
+        int retries = 10;
+        while (retries-- > 0) {
+            if (!is_process_running(pid)) {
+                break;
+            }
+            usleep(100000); // 100ms
+        }
+
+        // Force kill if still running
+        if (is_process_running(pid)) {
+            kill(pid, SIGKILL);
+        }
+
+        pidfile_remove_local(DAEMON_PID_FILE);
+        printf("✓ Daemon stopped\n");
+
+    } else if (strcmp(action, "restart") == 0) {
+        // Stop existing daemon if running
+        pid_t old_pid = pidfile_read_pid(DAEMON_PID_FILE);
+        if (old_pid > 0 && is_process_running(old_pid)) {
+            printf("Stopping daemon (PID: %d)...\n", (int)old_pid);
+            kill(old_pid, SIGTERM);
+            int retries = 10;
+            while (retries-- > 0 && is_process_running(old_pid)) {
+                usleep(100000);
+            }
+            if (is_process_running(old_pid)) {
+                kill(old_pid, SIGKILL);
+            }
+            pidfile_remove_local(DAEMON_PID_FILE);
+        }
+
+        // Now start new daemon (reuse start logic)
         printf("Starting ZeroClaw daemon...\n");
 
-        // Build TOML config
+        pid_t pid = fork();
+        if (pid < 0) {
+            perror("fork");
+            return ERR_FAILED;
+        }
+        if (pid > 0) {
+            // Parent process
+            pidfile_write(DAEMON_PID_FILE, pid);
+            printf("✓ Daemon restarted (PID: %d)\n", (int)pid);
+            printf("   Gateway: http://%s:%d\n", host, port);
+            return ERR_OK;
+        }
+        // Child process
+        setsid();
+
         char* config_toml = build_zeroclaw_toml_config(config);
         if (!config_toml) {
             fprintf(stderr, "Failed to build configuration\n");
@@ -237,21 +414,30 @@ err_t cmd_daemon(config_t* config, int argc, char** argv) {
             return ERR_FAILED;
         }
 
-        printf("✓ Daemon restarted\n");
+        signal(SIGINT, daemon_signal_handler);
+        signal(SIGTERM, daemon_signal_handler);
+
+        while (!g_daemon_should_stop && zc_daemon_is_running()) {
+            sleep(1);
+        }
+
+        if (zc_daemon_is_running()) {
+            zc_daemon_stop();
+        }
+
+        pidfile_remove_local(DAEMON_PID_FILE);
 
     } else if (strcmp(action, "status") == 0) {
-        if (zc_daemon_is_running()) {
-            printf("ZeroClaw daemon is running\n");
-
-            // Get detailed status
-            char* state_json = NULL;
-            zc_result_t result = zc_daemon_status(&state_json);
-            if (result == ZC_OK && state_json) {
-                printf("\nStatus:\n%s\n", state_json);
-                free(state_json);
-            }
+        pid_t pid = pidfile_read_pid(DAEMON_PID_FILE);
+        if (pid > 0 && is_process_running(pid)) {
+            printf("ZeroClaw daemon is running (PID: %d)\n", (int)pid);
+            printf("   Gateway: http://%s:%d\n", host, port);
+            printf("   PID file: %s\n", DAEMON_PID_FILE);
         } else {
             printf("Daemon is not running.\n");
+            if (pid > 0) {
+                pidfile_remove_local(DAEMON_PID_FILE);
+            }
             return ERR_NOT_FOUND;
         }
     }

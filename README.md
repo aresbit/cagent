@@ -28,6 +28,21 @@ make
 
 # Run single message
 ./build/bin/cclaw agent -m "Hello!"
+
+
+# daemon
+make install 
+
+#clean
+pkill -9 -f "cclaw daemon"
+
+cclaw daemon start
+
+# 配对
+
+curl -X POST http://127.0.0.1:8080/pair -H "X-Pairing-Code: 988216"
+
+# 然后在 Telegram 向 yysagentbot 发送消息测试
 ```
 
 ## Configuration

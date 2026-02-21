@@ -167,7 +167,8 @@ char* build_zeroclaw_toml_config(const config_t* config) {
     if (config->autonomy.level == 0) autonomy_level = "readonly";
     else if (config->autonomy.level == 2) autonomy_level = "full";
 
-    snprintf(toml, bufsize,
+    // Build base TOML config
+    int written = snprintf(toml, bufsize,
         "default_provider = \"%s\"\n"
         "default_model = \"%s\"\n"
         "default_temperature = %.2f\n"
@@ -214,6 +215,32 @@ char* build_zeroclaw_toml_config(const config_t* config) {
         autonomy_level,
         memory_backend
     );
+
+    // Add Telegram configuration if present
+    if (config->channels.telegram && config->channels.telegram->bot_token.len > 0) {
+        written += snprintf(toml + written, bufsize - written,
+            "\n"
+            "[channels.telegram]\n"
+            "bot_token = \"%.*s\"\n"
+            "allowed_users = [",
+            (int)config->channels.telegram->bot_token.len,
+            config->channels.telegram->bot_token.data
+        );
+
+        // Add allowed users
+        for (uint32_t i = 0; i < config->channels.telegram->allowed_users_count; i++) {
+            if (i > 0) {
+                written += snprintf(toml + written, bufsize - written, ", ");
+            }
+            written += snprintf(toml + written, bufsize - written,
+                "\"%.*s\"",
+                (int)config->channels.telegram->allowed_users[i].len,
+                config->channels.telegram->allowed_users[i].data
+            );
+        }
+
+        written += snprintf(toml + written, bufsize - written, "]\n");
+    }
 
     return toml;
 }

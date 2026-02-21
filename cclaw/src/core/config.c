@@ -108,6 +108,18 @@ void config_destroy(config_t* config) {
         alloc->free(config->gateway.paired_tokens);
     }
 
+    // Free telegram configuration
+    if (config->channels.telegram) {
+        str_free_impl(config->channels.telegram->bot_token, alloc);
+        if (config->channels.telegram->allowed_users) {
+            for (uint32_t i = 0; i < config->channels.telegram->allowed_users_count; i++) {
+                str_free_impl(config->channels.telegram->allowed_users[i], alloc);
+            }
+            alloc->free(config->channels.telegram->allowed_users);
+        }
+        alloc->free(config->channels.telegram);
+    }
+
     // Free autonomy configuration arrays
     if (config->autonomy.allowed_commands) {
         for (uint32_t i = 0; i < config->autonomy.allowed_commands_count; i++) {
@@ -428,6 +440,49 @@ err_t config_from_json_str(json_value_t* json, allocator_t* alloc, config_t** ou
         config->autonomy.level = (autonomy_level_t)level;
         config->autonomy.workspace_only = json_object_get_bool(autonomy, "workspace_only", true);
         config->autonomy.max_actions_per_hour = (uint32_t)json_object_get_number(autonomy, "max_actions_per_hour", 20);
+    }
+
+    // Channels configuration
+    json_object_t* channels = json_object_get_object(root, "channels");
+    if (channels) {
+        // Telegram configuration
+        json_object_t* telegram = json_object_get_object(channels, "telegram");
+        if (telegram) {
+            const char* bot_token = json_object_get_string(telegram, "bot_token", NULL);
+            if (bot_token) {
+                // Allocate telegram config structure - use sizeof for anonymous struct
+                struct tg_config { str_t bot_token; str_t* allowed_users; uint32_t allowed_users_count; };
+                config->channels.telegram = alloc->alloc(sizeof(struct tg_config));
+                if (config->channels.telegram) {
+                    memset(config->channels.telegram, 0, sizeof(struct tg_config));
+                    config->channels.telegram->bot_token = str_dup_impl(STR_VIEW(bot_token), alloc);
+                    
+                    // Load allowed users
+                    json_array_t* allowed_users_arr = json_object_get_array(telegram, "allowed_users");
+                    if (allowed_users_arr) {
+                        uint32_t count = (uint32_t)json_array_length(allowed_users_arr);
+                        config->channels.telegram->allowed_users_count = count;
+                        if (count > 0) {
+                            config->channels.telegram->allowed_users = alloc->alloc(sizeof(str_t) * count);
+                            if (config->channels.telegram->allowed_users) {
+                                for (uint32_t i = 0; i < count; i++) {
+                                    json_value_t* user_val = json_array_get(allowed_users_arr, i);
+                                    const char* username = json_as_string(user_val, NULL);
+                                    if (username) {
+                                        config->channels.telegram->allowed_users[i] = str_dup_impl(STR_VIEW(username), alloc);
+                                    }
+                                }
+                            }
+                        } else {
+                            config->channels.telegram->allowed_users = NULL;
+                        }
+                    } else {
+                        config->channels.telegram->allowed_users_count = 0;
+                        config->channels.telegram->allowed_users = NULL;
+                    }
+                }
+            }
+        }
     }
 
     *out_config = config;
