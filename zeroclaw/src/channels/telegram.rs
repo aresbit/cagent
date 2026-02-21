@@ -11,6 +11,29 @@ pub struct TelegramChannel {
     client: reqwest::Client,
 }
 
+/// Find the best split point for a message chunk
+/// Tries to split at a newline, otherwise at a space, otherwise at the max length
+fn find_split_point(text: &str, max_len: usize) -> usize {
+    // First, try to find a newline within the last 200 characters of the chunk
+    let search_start = max_len.saturating_sub(200);
+    if let Some(pos) = text[search_start..max_len.min(text.len())].rfind('\n') {
+        return search_start + pos + 1;
+    }
+
+    // Next, try to find a space
+    if let Some(pos) = text[search_start..max_len.min(text.len())].rfind(' ') {
+        return search_start + pos + 1;
+    }
+
+    // Fall back to byte boundary check for UTF-8
+    let mut split_at = max_len;
+    while split_at > 0 && !text.is_char_boundary(split_at) {
+        split_at -= 1;
+    }
+
+    split_at.max(1)
+}
+
 impl TelegramChannel {
     pub fn new(bot_token: String, allowed_users: Vec<String>) -> Self {
         Self {
@@ -361,15 +384,9 @@ impl TelegramChannel {
         tracing::info!("Telegram photo (URL) sent to {chat_id}: {url}");
         Ok(())
     }
-}
 
-#[async_trait]
-impl Channel for TelegramChannel {
-    fn name(&self) -> &str {
-        "telegram"
-    }
-
-    async fn send(&self, message: &str, chat_id: &str) -> anyhow::Result<()> {
+    /// Send a single message chunk (must be under Telegram's limit)
+    async fn send_single_message(&self, message: &str, chat_id: &str) -> anyhow::Result<()> {
         let markdown_body = serde_json::json!({
             "chat_id": chat_id,
             "text": message,
@@ -416,6 +433,77 @@ impl Channel for TelegramChannel {
                 plain_status,
                 plain_err
             );
+        }
+
+        Ok(())
+    }
+
+    /// Split a message into chunks of maximum size, preserving line boundaries when possible
+    fn split_message_into_chunks(&self, message: &str, max_len: usize) -> Vec<String> {
+        let mut chunks = Vec::new();
+        let mut remaining = message;
+
+        while !remaining.is_empty() {
+            if remaining.len() <= max_len {
+                chunks.push(remaining.to_string());
+                break;
+            }
+
+            // Try to find a good split point (preferably at a newline)
+            let split_point = find_split_point(remaining, max_len);
+            let (chunk, rest) = remaining.split_at(split_point);
+            chunks.push(chunk.to_string());
+            remaining = rest;
+        }
+
+        chunks
+    }
+}
+
+#[async_trait]
+impl Channel for TelegramChannel {
+    fn name(&self) -> &str {
+        "telegram"
+    }
+
+    async fn send(&self, message: &str, chat_id: &str) -> anyhow::Result<()> {
+        // Telegram has a 4096 character limit per message
+        const MAX_MESSAGE_LENGTH: usize = 4000; // Leave some margin for safety
+
+        // If message fits in one chunk, send directly
+        if message.len() <= MAX_MESSAGE_LENGTH {
+            return self.send_single_message(message, chat_id).await;
+        }
+
+        // Split message into chunks
+        let chunks = self.split_message_into_chunks(message, MAX_MESSAGE_LENGTH);
+        let total_chunks = chunks.len();
+
+        for (idx, chunk) in chunks.iter().enumerate() {
+            // Add part indicator for multi-part messages
+            let text: String = if total_chunks > 1 {
+                format!("[Part {}/{}]\n{}", idx + 1, total_chunks, chunk)
+            } else {
+                chunk.clone()
+            };
+
+            match self.send_single_message(&text, chat_id).await {
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to send chunk {}/{}: {}",
+                        idx + 1,
+                        total_chunks,
+                        e
+                    );
+                    // Continue sending remaining chunks even if one fails
+                }
+            }
+
+            // Small delay between chunks to avoid rate limiting
+            if idx < total_chunks - 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
         }
 
         Ok(())
@@ -865,5 +953,75 @@ mod tests {
 
         // Should not panic
         assert!(result.is_err());
+    }
+
+    // ── Message chunking tests ──────────────────────────────────────
+
+    #[test]
+    fn find_split_point_prefers_newline() {
+        let text = "Hello world\nthis is a test\nwith multiple lines";
+        let max_len = 20;
+        let split = find_split_point(text, max_len);
+        // Should split at the first newline (11 + 1 = 12)
+        assert_eq!(split, 12);
+    }
+
+    #[test]
+    fn find_split_point_falls_back_to_space() {
+        let text = "Hello world this is a test without newlines";
+        let max_len = 20;
+        let split = find_split_point(text, max_len);
+        // Should split at the space after "world" (11 + 1 = 12)
+        assert_eq!(split, 12);
+    }
+
+    #[test]
+    fn find_split_point_respects_utf8_boundaries() {
+        let text = "Hello 世界 this is a test";
+        let max_len = 10;
+        let split = find_split_point(text, max_len);
+        // Should not split in the middle of a multi-byte character
+        assert!(text.is_char_boundary(split));
+    }
+
+    #[test]
+    fn find_split_point_at_least_one_char() {
+        let text = "a";
+        let split = find_split_point(text, 1);
+        assert_eq!(split, 1);
+    }
+
+    #[test]
+    fn telegram_split_message_into_chunks_short_message() {
+        let ch = TelegramChannel::new("fake-token".into(), vec!["*".into()]);
+        let message = "Short message";
+        let chunks = ch.split_message_into_chunks(message, 100);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], "Short message");
+    }
+
+    #[test]
+    fn telegram_split_message_into_chunks_long_message() {
+        let ch = TelegramChannel::new("fake-token".into(), vec!["*".into()]);
+        let message = "Line1\nLine2\nLine3\nLine4\nLine5";
+        let chunks = ch.split_message_into_chunks(message, 15);
+        assert!(chunks.len() > 1);
+        // Each chunk should be within limit
+        for chunk in &chunks {
+            assert!(chunk.len() <= 15);
+        }
+        // Reconstruct and verify
+        let reconstructed: String = chunks.join("");
+        assert_eq!(reconstructed, message);
+    }
+
+    #[test]
+    fn telegram_split_message_into_chunks_exact_boundary() {
+        let ch = TelegramChannel::new("fake-token".into(), vec!["*".into()]);
+        let message = "a".repeat(100);
+        let chunks = ch.split_message_into_chunks(&message, 50);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 50);
+        assert_eq!(chunks[1].len(), 50);
     }
 }
