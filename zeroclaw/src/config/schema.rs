@@ -844,31 +844,41 @@ impl Config {
             .context("Could not find home directory")?;
         let zeroclaw_dir = home.join(".zeroclaw");
         let cclaw_dir = home.join(".cclaw");
-        let config_path = zeroclaw_dir.join("config.toml");
+        let zeroclaw_config_path = zeroclaw_dir.join("config.toml");
 
+        // Ensure directories exist
         if !zeroclaw_dir.exists() {
             fs::create_dir_all(&zeroclaw_dir).context("Failed to create .zeroclaw directory")?;
             fs::create_dir_all(zeroclaw_dir.join("workspace"))
                 .context("Failed to create workspace directory")?;
         }
-
-        // Also ensure ~/.cclaw exists
         if !cclaw_dir.exists() {
             fs::create_dir_all(&cclaw_dir).context("Failed to create .cclaw directory")?;
         }
 
-        if config_path.exists() {
+        // Priority 1: Try to load from CClaw's config.json (for cclaw integration)
+        if let Some(mut config) = crate::config::cclaw_loader::load_cclaw_config()? {
+            // Apply environment variable overrides
+            config.apply_env_overrides();
+            return Ok(config);
+        }
+
+        // Priority 2: Load from ZeroClaw's config.toml
+        if zeroclaw_config_path.exists() {
             let contents =
-                fs::read_to_string(&config_path).context("Failed to read config file")?;
+                fs::read_to_string(&zeroclaw_config_path).context("Failed to read config file")?;
             let mut config: Config =
                 toml::from_str(&contents).context("Failed to parse config file")?;
             // Set computed paths that are skipped during serialization
-            config.config_path = config_path.clone();
+            config.config_path = zeroclaw_config_path.clone();
             config.workspace_dir = cclaw_dir;
+            // Apply environment variable overrides
+            config.apply_env_overrides();
             Ok(config)
         } else {
+            // Priority 3: Create default config
             let mut config = Config::default();
-            config.config_path = config_path.clone();
+            config.config_path = zeroclaw_config_path.clone();
             config.workspace_dir = cclaw_dir;
             config.save()?;
             Ok(config)

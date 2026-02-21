@@ -708,11 +708,25 @@ pub unsafe extern "C" fn zc_daemon_start(
         }
     };
 
-    let config: Config = if toml_str.is_empty() {
-        Config::default()
-    } else {
-        match toml::from_str(&toml_str) {
+    // Load configuration with priority:
+    // 1. If toml_str is "@CCLAW" or empty, use Config::load_or_init() which will
+    //    try ~/.cclaw/config.json first, then ~/.zeroclaw/config.toml
+    // 2. Otherwise, parse the TOML and apply env overrides
+    let mut config: Config = if toml_str.is_empty() || toml_str == "@CCLAW" {
+        match Config::load_or_init() {
             Ok(c) => c,
+            Err(e) => {
+                eprintln!("Failed to load config: {}", e);
+                return ZcResult::InvalidArg;
+            }
+        }
+    } else {
+        match toml::from_str::<Config>(&toml_str) {
+            Ok(mut c) => {
+                // Apply environment variable overrides to FFI-provided config
+                c.apply_env_overrides();
+                c
+            }
             Err(e) => {
                 eprintln!("Failed to parse config TOML: {}", e);
                 return ZcResult::InvalidArg;

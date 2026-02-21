@@ -1,3 +1,4 @@
+pub mod cclaw_loader;
 pub mod schema;
 
 pub use schema::{

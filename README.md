@@ -17,8 +17,17 @@ CAgent is an AI assistant infrastructure project with two implementations:
 ## Quick Start
 
 ```bash
-# Build
-make
+# Build 构建和测试
+make clean && make all
+make install 
+# or
+  # 编译 ZeroClaw
+  cd zeroclaw
+  cargo build --release --lib
+
+  # 编译 CClaw
+  cd ../cclaw
+  make clean && make
 
 # config
 ./build/bin/cclaw onboard
@@ -31,8 +40,6 @@ make
 
 
 # daemon
-make install 
-
 #clean
 pkill -9 -f "cclaw daemon"
 

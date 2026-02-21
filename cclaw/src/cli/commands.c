@@ -289,16 +289,10 @@ err_t cmd_daemon(config_t* config, int argc, char** argv) {
             setsid();  // Create new session
         }
 
-        // Build TOML config
-        char* config_toml = build_zeroclaw_toml_config(config);
-        if (!config_toml) {
-            fprintf(stderr, "Failed to build configuration\n");
-            return ERR_OUT_OF_MEMORY;
-        }
-
         // Start daemon via FFI
-        zc_result_t result = zc_daemon_start(config_toml, host, port);
-        free(config_toml);
+        // Use "@CCLAW" to let ZeroClaw load directly from ~/.cclaw/config.json
+        // This ensures all configuration (including api_key) is properly loaded
+        zc_result_t result = zc_daemon_start("@CCLAW", host, port);
 
         if (result != ZC_OK) {
             fprintf(stderr, "Failed to start daemon: %d\n", result);
@@ -400,15 +394,8 @@ err_t cmd_daemon(config_t* config, int argc, char** argv) {
         // Child process
         setsid();
 
-        char* config_toml = build_zeroclaw_toml_config(config);
-        if (!config_toml) {
-            fprintf(stderr, "Failed to build configuration\n");
-            return ERR_OUT_OF_MEMORY;
-        }
-
-        zc_result_t result = zc_daemon_start(config_toml, host, port);
-        free(config_toml);
-
+        // Start daemon via FFI using CClaw config
+        zc_result_t result = zc_daemon_start("@CCLAW", host, port);
         if (result != ZC_OK) {
             fprintf(stderr, "Failed to start daemon: %d\n", result);
             return ERR_FAILED;

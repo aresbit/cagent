@@ -3,6 +3,84 @@
 ## 目标
 1. **放宽 ZeroClaw 安全模型** - 允许 agent-browser 等技能执行，开放网络访问
 2. **Daemon 套皮 ZeroClaw** - 复用 Rust 层成熟的 daemon 实现
+3. **修复 Telegram 消息收发配置问题** - 让 ZeroClaw 直接使用 `~/.cclaw/config.json`
+
+---
+
+## 任务 3: 修复 Telegram 消息收发配置问题 ✅ 已完成
+
+### 问题分析
+
+当前 `cclaw daemon start` 启动 ZeroClaw 时，通过 `build_zeroclaw_toml_config()` 生成 TOML 配置，但**遗漏了 `api_key` 字段**。这导致：
+
+1. Telegram 频道可以接收消息
+2. 但处理消息时调用 LLM provider 失败（缺少 API key）
+3. 消息收发功能无法正常工作
+
+**根本原因**: `cclaw/src/cli/commands_zeroclaw.c:152-246` 的 `build_zeroclaw_toml_config()` 函数没有包含 `api_key`。
+
+### 解决方案
+
+让 ZeroClaw **直接读取 `~/.cclaw/config.json`**，而不是依赖 CClaw 传递 TOML 配置。这样：
+
+1. 配置单一来源，避免同步问题
+2. 支持完整的 CClaw 配置（包括 api_key、channels 等）
+3. 简化 CClaw 启动逻辑
+
+### 已完成的修改
+
+#### 1. 新建 `zeroclaw/src/config/cclaw_loader.rs`
+
+- 实现 `load_cclaw_config()` 函数从 `~/.cclaw/config.json` 加载配置
+- 解析 api_key、default_provider、default_model、channels.telegram 等字段
+- 转换为 ZeroClaw Config 结构
+
+#### 2. 修改 `zeroclaw/src/config/mod.rs`
+
+- 添加 `pub mod cclaw_loader;` 导出新的模块
+
+#### 3. 修改 `zeroclaw/src/config/schema.rs`
+
+- 修改 `load_or_init()` 方法，优先尝试从 CClaw 配置加载
+- 加载后应用环境变量覆盖
+
+#### 4. 修改 `zeroclaw/src/ffi/mod.rs`
+
+- 修改 `zc_daemon_start()` 支持 `"@CCLAW"` 特殊标记
+- 支持空字符串或 `"@CCLAW"` 时使用 `Config::load_or_init()`
+- 应用环境变量覆盖到 FFI 传入的配置
+
+#### 5. 修改 `cclaw/src/cli/commands_zeroclaw.c`
+
+- 修复 `build_zeroclaw_toml_config()` 添加 `api_key` 字段（向后兼容）
+
+#### 6. 修改 `cclaw/src/cli/commands.c`
+
+- 使用 `zc_daemon_start("@CCLAW", host, port)` 让 ZeroClaw 直接读取 CClaw 配置
+- 更新 start 和 restart 逻辑
+
+### 验证步骤
+
+1. 确保 `~/.cclaw/config.json` 存在且有 api_key
+2. 重新编译 cclaw 和 zeroclaw
+3. 运行 `cclaw daemon start`
+4. 从 Telegram 发送消息
+5. 验证消息被正确处理并返回响应
+
+### 构建命令
+
+```bash
+# 编译 ZeroClaw (Rust)
+cd zeroclaw
+cargo build --release --lib
+
+# 编译 CClaw (C)
+cd ../cclaw
+make clean && make
+
+# 运行测试
+./bin/cclaw daemon start
+```
 
 ---
 
@@ -157,33 +235,24 @@ static void print_daemon_status(const char* state_json) {
 
 ---
 
-## 实施步骤
+## 实施步骤总结
 
-### 阶段 1: 放宽安全（2-3 小时）
-1. 修改 `zeroclaw/src/security/policy.rs` 默认配置
-2. 调整命令风险等级判断
-3. 编译并测试
-4. 验证 agent-browser 技能可以正常工作
+### 当前优先：任务 3（配置修复）
+1. **快速修复**: 在 `build_zeroclaw_toml_config()` 中添加 `api_key`
+2. **完整方案**: 实现 `cclaw_loader.rs` 让 ZeroClaw 直接读取 `~/.cclaw/config.json`
 
-### 阶段 2: Daemon FFI 接口（3-4 小时）
-1. 在 `zeroclaw/src/ffi/mod.rs` 添加 daemon 相关 FFI 函数
-2. 处理异步 runtime 的 FFI 调用问题
-3. 编译 zeroclaw 生成新的 `.a` 文件
-
-### 阶段 3: C 层适配（2-3 小时）
-1. 修改 `cclaw/src/cli/commands.c` 的 `cmd_daemon`
-2. 添加状态解析和展示
-3. 添加 FFI 声明到头文件
-4. 编译 cclaw
-
-### 阶段 4: 测试（1-2 小时）
-1. 测试 daemon start/stop/status
-2. 测试各组件正常工作
-3. 测试与 agent 的集成
+### 后续：任务 1 和 2
+1. 放宽安全模型
+2. Daemon 套皮 ZeroClaw 完善
 
 ---
 
 ## 关键代码位置
+
+### 配置修复
+- `cclaw/src/cli/commands_zeroclaw.c:152-246` - `build_zeroclaw_toml_config()` 需要添加 api_key
+- `zeroclaw/src/config/schema.rs:840-876` - `load_or_init()` 需要优先读取 CClaw 配置
+- `zeroclaw/src/ffi/mod.rs:683-751` - `zc_daemon_start()` 配置加载
 
 ### 安全模型
 - `zeroclaw/src/security/policy.rs:96-234` - SecurityPolicy Default
@@ -208,10 +277,10 @@ static void print_daemon_status(const char* state_json) {
    - 如何优雅地停止（当前用 `tokio::signal::ctrl_c()`）
    - 如何传递停止信号
 
-3. **配置传递**: cclaw 和 zeroclaw 的配置格式不同，需要转换：
-   - cclaw: JSON 配置
-   - zeroclaw: TOML 配置
-   - 当前已有 `build_zeroclaw_config()` 函数处理转换
+3. **配置传递**: cclaw 和 zeroclaw 的配置格式不同：
+   - cclaw: JSON 配置 (`~/.cclaw/config.json`)
+   - zeroclaw: TOML 配置 (`~/.zeroclaw/config.toml`)
+   - **解决方案**: ZeroClaw 直接读取 CClaw 的 JSON 配置
 
 4. **兼容性**: 确保修改后：
    - 原有 cclaw 独立功能（非套皮部分）仍然工作

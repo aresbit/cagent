@@ -169,6 +169,7 @@ char* build_zeroclaw_toml_config(const config_t* config) {
 
     // Build base TOML config
     int written = snprintf(toml, bufsize,
+        "api_key = \"%.*s\"\n"
         "default_provider = \"%s\"\n"
         "default_model = \"%s\"\n"
         "default_temperature = %.2f\n"
@@ -209,6 +210,7 @@ char* build_zeroclaw_toml_config(const config_t* config) {
         "[identity]\n"
         "format = \"openclaw\"\n"
         "name = \"CClaw\"\n",
+        (int)config->api_key.len, config->api_key.data ? config->api_key.data : "",
         provider,
         model,
         config->default_temperature,
