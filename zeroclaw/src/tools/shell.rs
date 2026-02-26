@@ -1,6 +1,6 @@
 use super::traits::{Tool, ToolResult};
 use crate::runtime::RuntimeAdapter;
-use crate::security::SecurityPolicy;
+use crate::security::{CommandRiskLevel, SecurityPolicy};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -85,7 +85,15 @@ impl Tool for ShellTool {
             }
         }
 
-        if !self.security.record_action() {
+        let risk_level = self.security.command_risk_level(command);
+        let action_allowed = match risk_level {
+            CommandRiskLevel::Low => {
+                self.security.record_read_only_action()
+            }
+            _ => self.security.record_action(),
+        };
+
+        if !action_allowed {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),

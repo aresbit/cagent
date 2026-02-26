@@ -307,15 +307,23 @@ pub async fn agent_turn(
     model: &str,
     temperature: f64,
 ) -> Result<String> {
-    for _iteration in 0..MAX_TOOL_ITERATIONS {
+    for iteration in 0..MAX_TOOL_ITERATIONS {
         let response = provider
             .chat_with_history(history, model, temperature)
             .await?;
 
         let (text, tool_calls) = parse_tool_calls(&response);
 
+        tracing::debug!(
+            iteration = iteration,
+            tool_calls_count = tool_calls.len(),
+            has_text = !text.is_empty(),
+            "Agent turn processing"
+        );
+
         if tool_calls.is_empty() {
             // No tool calls — this is the final response
+            tracing::info!(iteration = iteration, "Agent turn complete - no more tool calls");
             history.push(ChatMessage::assistant(&response));
             return Ok(if text.is_empty() { response } else { text });
         }
@@ -329,6 +337,7 @@ pub async fn agent_turn(
         // Execute each tool call and build results
         let mut tool_results = String::new();
         for call in &tool_calls {
+            tracing::info!(tool_name = %call.name, arguments = %call.arguments, "Executing tool");
             let start = Instant::now();
             let result = if let Some(tool) = find_tool(tools_registry, &call.name) {
                 match tool.execute(call.arguments.clone()).await {
@@ -363,6 +372,7 @@ pub async fn agent_turn(
                 "<tool_response name=\"{}\">\n{}\n</tool_response>",
                 call.name, result
             );
+            tracing::info!(tool_name = %call.name, success = result.len() < 1000, "Tool execution complete");
         }
 
         // Add assistant message with tool calls + tool results to history
@@ -380,6 +390,7 @@ pub fn build_tool_instructions(tools_registry: &[Box<dyn Tool>]) -> String {
     instructions.push_str("\n## Tool Use Protocol\n\n");
     instructions.push_str("CRITICAL: You MUST use <tool_call> tags to call tools. Never just describe what you will do!\n\n");
     instructions.push_str("IMPORTANT: Only call ONE tool at a time. If you need multiple tools, wait for the result and call the next tool in your response.\n\n");
+    instructions.push_str("CRITICAL: Continue calling tools until the task is COMPLETELY finished. Do NOT return a final answer until you have verified the task is done. If you need to check status, call a tool. Only return a text response (without tool_call) when the task is 100% complete.\n\n");
     instructions.push_str("To call a tool, you MUST output this exact format:\n\n");
     instructions.push_str("<tool_call>\n{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}\n</tool_call>\n\n");
     instructions.push_str("Correct examples (one tool at a time):\n");

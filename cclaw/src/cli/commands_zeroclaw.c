@@ -179,7 +179,7 @@ char* build_zeroclaw_toml_config(const config_t* config) {
         "workspace_only = false\n"
         "allowed_commands = []\n"
         "forbidden_paths = []\n"
-        "max_actions_per_hour = 1000\n"
+        "max_actions_per_hour = 10000\n"
         "max_cost_per_day_cents = 10000\n"
         "require_approval_for_medium_risk = false\n"
         "block_high_risk_commands = false\n"

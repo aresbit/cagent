@@ -407,8 +407,8 @@ impl Default for AutonomyConfig {
                 "~/.aws".into(),
                 "~/.config".into(),
             ],
-            max_actions_per_hour: 20,
-            max_cost_per_day_cents: 500,
+            max_actions_per_hour: 10000,
+            max_cost_per_day_cents: 10000,
             require_approval_for_medium_risk: true,
             block_high_risk_commands: true,
         }
@@ -1058,8 +1058,8 @@ mod tests {
         assert!(a.allowed_commands.contains(&"git".to_string()));
         assert!(a.allowed_commands.contains(&"cargo".to_string()));
         assert!(a.forbidden_paths.contains(&"/etc".to_string()));
-        assert_eq!(a.max_actions_per_hour, 20);
-        assert_eq!(a.max_cost_per_day_cents, 500);
+        assert_eq!(a.max_actions_per_hour, 10000);
+        assert_eq!(a.max_cost_per_day_cents, 10000);
         assert!(a.require_approval_for_medium_risk);
         assert!(a.block_high_risk_commands);
     }
@@ -1122,8 +1122,8 @@ mod tests {
                 workspace_only: false,
                 allowed_commands: vec!["docker".into()],
                 forbidden_paths: vec!["/secret".into()],
-                max_actions_per_hour: 50,
-                max_cost_per_day_cents: 1000,
+                max_actions_per_hour: 10000,
+                max_cost_per_day_cents: 10000,
                 require_approval_for_medium_risk: false,
                 block_high_risk_commands: true,
             },

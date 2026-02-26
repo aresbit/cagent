@@ -456,9 +456,17 @@ impl SecurityPolicy {
 
     /// Record an action and check if the rate limit has been exceeded.
     /// Returns `true` if the action is allowed, `false` if rate-limited.
+    /// Only records for write actions (medium/high risk).
     pub fn record_action(&self) -> bool {
         let count = self.tracker.record();
         count <= self.max_actions_per_hour as usize
+    }
+
+    /// Record a read-only action that does NOT count against rate limit.
+    /// Used for low-risk commands like git status, git diff, ls, cat, etc.
+    /// Always returns true - read-only actions are never rate limited.
+    pub fn record_read_only_action(&self) -> bool {
+        true
     }
 
     /// Check if the rate limit would be exceeded without recording.
