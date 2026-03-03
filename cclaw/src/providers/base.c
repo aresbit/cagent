@@ -4,6 +4,7 @@
 #include "providers/base.h"
 #include "providers/openai.h"
 #include "providers/anthropic.h"
+#include "providers/ollama.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -138,6 +139,7 @@ err_t provider_registry_init(void) {
     provider_register("kimi", kimi_get_vtable());
     provider_register("openai", openai_get_vtable());
     provider_register("anthropic", anthropic_get_vtable());
+    provider_register("ollama", ollama_get_vtable());
 
     return ERR_OK;
 }

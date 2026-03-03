@@ -64,6 +64,26 @@ make clean && make
 }
 ```
 
+### 本地 Ollama 配置
+
+使用本地 Ollama 时，需要在配置中指定 `base_url`：
+
+```json
+{
+  "api_key": "ollama",
+  "default_provider": "ollama",
+  "default_model": "llama3.2",
+  "default_temperature": 0.7,
+  "channels": {
+    "cli": true
+  }
+}
+```
+
+Ollama 默认使用 `http://localhost:11434/v1` 作为 API 端点。
+
+支持的模型包括：`llama3.2`, `llama3.1`, `qwen2.5`, `mistral`, `codellama`, `phi3`, `gemma2` 等。
+
 ### 配置项说明
 
 | 配置项 | 说明 | 默认值 |

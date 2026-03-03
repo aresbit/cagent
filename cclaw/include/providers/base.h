@@ -129,6 +129,7 @@ const provider_vtable_t* deepseek_get_vtable(void);
 const provider_vtable_t* kimi_get_vtable(void);
 const provider_vtable_t* openai_get_vtable(void);
 const provider_vtable_t* anthropic_get_vtable(void);
+const provider_vtable_t* ollama_get_vtable(void);
 
 // Provider creation helpers
 provider_t* provider_alloc(const provider_vtable_t* vtable);
