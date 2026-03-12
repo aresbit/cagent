@@ -2,6 +2,7 @@
 
 # Build configuration
 debug ?= 0
+LTO ?= 0
 NAME := cclaw
 SRC_DIR := src
 INCLUDE_DIR := include
@@ -49,9 +50,12 @@ ifeq ($(debug),1)
     LDFLAGS += -fsanitize=address -fsanitize=undefined
 else
     CFLAGS += -O3 -DNDEBUG=1
-    # LTO disabled on Android due to tagged pointer issues
+    # LTO can fail when C toolchain LLVM version differs from rustc LLVM.
+    # Keep disabled by default; enable with `make LTO=1` only on matched toolchains.
     ifneq ($(PLATFORM),android)
-        CFLAGS += -flto
+        ifeq ($(LTO),1)
+            CFLAGS += -flto
+        endif
     endif
     CFLAGS += -fomit-frame-pointer
 endif
@@ -246,6 +250,7 @@ help:
 	@echo "  all       - Build project including ZeroClaw library (default)"
 	@echo "  zeroclaw  - Build ZeroClaw Rust library only"
 	@echo "  debug=1   - Build with debug symbols and sanitizers"
+	@echo "  LTO=1     - Enable LTO (requires compatible clang/rust LLVM versions)"
 	@echo "  test      - Build and run tests"
 	@echo "  format    - Format source code"
 	@echo "  lint      - Run static analysis"
