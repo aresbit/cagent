@@ -146,15 +146,14 @@ err_t cmd_onboard(config_t* config, int argc, char** argv) {
     printf("╚══════════════════════════════════════════════════════════╝\n\n");
 
     // API Key
-    printf("\nAvailable providers: openrouter, anthropic, openai, kimi, deepseek\n");
+    printf("\nAvailable providers: openrouter, anthropic, openai, kimi, deepseek, ollama\n");
     str_t api_key = prompt_input("Enter your API key", NULL);
     if (!str_empty(api_key)) {
         if (config->api_key.data) free((void*)config->api_key.data);
         config->api_key = api_key;
     }
 
-    // Provider
-    str_t provider = prompt_input("Default provider (openrouter/anthropic/openai/kimi/deepseek)", "openrouter");
+    str_t provider = prompt_input("Default provider (openrouter/anthropic/openai/kimi/deepseek/ollama)", "openrouter");
     if (!str_empty(provider)) {
         if (config->default_provider.data) free((void*)config->default_provider.data);
         config->default_provider = provider;
@@ -162,7 +161,6 @@ err_t cmd_onboard(config_t* config, int argc, char** argv) {
 
     // Model - suggest appropriate default based on provider
     const char* default_model = "anthropic/claude-3.5-sonnet";
-    // Use the effective provider value (user input or default)
     const char* effective_provider = str_empty(provider) ? "openrouter" : provider.data;
     if (strcmp(effective_provider, "kimi") == 0) {
         default_model = "moonshot-k2.5";
@@ -172,6 +170,8 @@ err_t cmd_onboard(config_t* config, int argc, char** argv) {
         default_model = "claude-3-5-sonnet-20241022";
     } else if (strcmp(effective_provider, "openai") == 0) {
         default_model = "gpt-4o";
+    } else if (strcmp(effective_provider, "ollama") == 0) {
+        default_model = "llama3.2";
     }
     str_t model = prompt_input("Default model", default_model);
     if (!str_empty(model)) {
@@ -549,8 +549,46 @@ err_t cmd_tui(config_t* config, int argc, char** argv) {
         return err;
     }
 
+    // Initialize ZeroClaw session bridge (best-effort; fallback to legacy path if it fails)
+    tui->use_zeroclaw_session = false;
+    tui->zc_turn_inflight = false;
+    tui->zc_turn_cancelling = false;
+    tui->zc_active_turn_id = 0;
+    tui->zc_runtime = NULL;
+    tui->zc_session = NULL;
+
+    const char* workspace = ".";
+    char cwd[1024];
+    if (getcwd(cwd, sizeof(cwd)) != NULL) {
+        workspace = cwd;
+    }
+
+    if (zc_agent_init(NULL, workspace, &tui->zc_runtime) == ZC_OK) {
+        if (zc_session_create(
+                tui->zc_runtime,
+                str_empty(config->default_provider) ? NULL : config->default_provider.data,
+                str_empty(config->default_model) ? NULL : config->default_model.data,
+                config->default_temperature,
+                &tui->zc_session
+            ) == ZC_OK) {
+            tui->use_zeroclaw_session = true;
+        } else {
+            zc_agent_shutdown(tui->zc_runtime);
+            tui->zc_runtime = NULL;
+        }
+    }
+
     // Run TUI
     err = tui_run(tui, agent);
+
+    if (tui->zc_session) {
+        zc_session_destroy(tui->zc_session);
+        tui->zc_session = NULL;
+    }
+    if (tui->zc_runtime) {
+        zc_agent_shutdown(tui->zc_runtime);
+        tui->zc_runtime = NULL;
+    }
 
     // Cleanup
     tui_destroy(tui);

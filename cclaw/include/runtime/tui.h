@@ -7,6 +7,7 @@
 #include "core/types.h"
 #include "core/agent.h"
 #include "core/error.h"
+#include "zeroclaw_ffi.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -70,6 +71,12 @@ struct tui_t {
     tui_config_t config;
     agent_t* agent;
     agent_session_t* session;
+    zc_agent_runtime_t* zc_runtime;
+    zc_session_handle_t* zc_session;
+    bool use_zeroclaw_session;
+    bool zc_turn_inflight;
+    bool zc_turn_cancelling;
+    uint64_t zc_active_turn_id;
 
     // Terminal state
     struct termios original_termios;

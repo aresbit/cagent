@@ -349,6 +349,96 @@ static void resize_handler(int sig) {
     }
 }
 
+static void tui_format_summary(char* out, size_t out_size, const char* text, size_t max_chars) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!text) return;
+
+    // Keep the first line only for compact status rendering.
+    size_t n = strcspn(text, "\r\n");
+    if (n > max_chars) {
+        n = max_chars;
+    }
+
+    if (n + 4 >= out_size) {
+        n = out_size > 4 ? out_size - 4 : 0;
+    }
+
+    if (n > 0) {
+        memcpy(out, text, n);
+        out[n] = '\0';
+    }
+
+    if (text[n] != '\0') {
+        strncat(out, "...", out_size - strlen(out) - 1);
+    }
+}
+
+static void tui_poll_zeroclaw_events(tui_t* tui, uint32_t max_events) {
+    if (!tui || !tui->use_zeroclaw_session || !tui->zc_session) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < max_events; i++) {
+        zc_event_t ev = {0};
+        zc_result_t poll_res = zc_session_poll_event(tui->zc_session, &ev, 0);
+        if (poll_res != ZC_OK || ev.type == ZC_EVT_NONE) {
+            break;
+        }
+
+        if (ev.type == ZC_EVT_ASSISTANT_TEXT) {
+            if (ev.payload) {
+                tui_chat_add_assistant_message(tui, ev.payload);
+            }
+        } else if (ev.type == ZC_EVT_TOOL_START) {
+            if (ev.name) {
+                char args_summary[140];
+                char line[320];
+                tui_format_summary(args_summary, sizeof(args_summary), ev.payload, 96);
+                if (args_summary[0] != '\0') {
+                    snprintf(line, sizeof(line), "[tool:start] %s %s", ev.name, args_summary);
+                } else {
+                    snprintf(line, sizeof(line), "[tool:start] %s", ev.name);
+                }
+                tui_chat_add_system_message(tui, line);
+            }
+        } else if (ev.type == ZC_EVT_TOOL_END) {
+            if (ev.name) {
+                char result_summary[140];
+                char line[320];
+                tui_format_summary(result_summary, sizeof(result_summary), ev.payload, 96);
+                if (result_summary[0] != '\0') {
+                    snprintf(line, sizeof(line), "[tool:end] %s %s", ev.name, result_summary);
+                } else {
+                    snprintf(line, sizeof(line), "[tool:end] %s", ev.name);
+                }
+                tui_chat_add_system_message(tui, line);
+            }
+        } else if (ev.type == ZC_EVT_ERROR) {
+            if (ev.payload) {
+                tui_chat_add_system_message(tui, ev.payload);
+            } else {
+                tui_chat_add_system_message(tui, "Error: ZeroClaw session failed");
+            }
+            tui->zc_turn_inflight = false;
+            tui->zc_turn_cancelling = false;
+            tui->zc_active_turn_id = 0;
+        } else if (ev.type == ZC_EVT_CANCELLED) {
+            tui_chat_add_system_message(tui, "Cancelled");
+            tui->zc_turn_inflight = false;
+            tui->zc_turn_cancelling = false;
+            tui->zc_active_turn_id = 0;
+        } else if (ev.type == ZC_EVT_TURN_DONE) {
+            tui->zc_turn_inflight = false;
+            tui->zc_turn_cancelling = false;
+            tui->zc_active_turn_id = 0;
+        }
+
+        zc_session_free_event(&ev);
+        tui->needs_redraw = true;
+    }
+}
+
 err_t tui_run(tui_t* tui, agent_t* agent) {
     if (!tui || !agent) return ERR_INVALID_ARGUMENT;
 
@@ -369,6 +459,8 @@ err_t tui_run(tui_t* tui, agent_t* agent) {
 
     // Main loop
     while (tui->running) {
+        tui_poll_zeroclaw_events(tui, 32);
+
         if (tui->needs_redraw) {
             tui_redraw(tui);
             tui->needs_redraw = false;
@@ -430,7 +522,7 @@ void tui_draw_toolbar(tui_t* tui) {
     }
 
     tui_move_cursor(1, 0);
-    printf("CClaw Agent  |  Ctrl+H: Help  |  Ctrl+N: New  |  Ctrl+B: Branch  |  Ctrl+Q: Quit");
+    printf("CClaw Agent  |  Ctrl+H: Help  |  Ctrl+N: New  |  Ctrl+B: Branch  |  Ctrl+C: Cancel  |  Ctrl+Q: Quit");
 
     tui_reset_color();
 }
@@ -576,8 +668,21 @@ void tui_draw_status_bar(tui_t* tui) {
         model_name = tui->agent->ctx->provider->config.default_model.data;
         if (!model_name) model_name = "unknown";
     }
-    snprintf(status, sizeof(status), " Model: %s  |  Tokens: %u  |  Branch: main ",
-             model_name, 0);
+    const char* run_state = "idle";
+    if (tui->zc_turn_cancelling) {
+        run_state = "cancelling";
+    } else if (tui->zc_turn_inflight) {
+        run_state = "running";
+    }
+
+    snprintf(
+        status,
+        sizeof(status),
+        " Engine: %s  |  Model: %s  |  State: %s ",
+        (tui->use_zeroclaw_session && tui->zc_session) ? "zeroclaw-session" : "legacy-c-agent",
+        model_name,
+        run_state
+    );
 
     tui_move_cursor(1, y);
     printf("%s", status);
@@ -692,8 +797,24 @@ err_t tui_process_input(tui_t* tui) {
     }
 
     // Handle control characters
-    if (c == TUI_KEY_CTRL('c') || c == TUI_KEY_CTRL('q')) {
+    if (c == TUI_KEY_CTRL('q')) {
         tui->running = false;
+        return ERR_OK;
+    }
+
+    if (c == TUI_KEY_CTRL('c')) {
+        if (tui->use_zeroclaw_session && tui->zc_session && tui->zc_turn_inflight) {
+            if (!tui->zc_turn_cancelling) {
+                zc_session_cancel(tui->zc_session, tui->zc_active_turn_id);
+                tui->zc_turn_cancelling = true;
+                tui_chat_add_system_message(tui, "Cancelling current turn...");
+            } else {
+                tui_chat_add_system_message(tui, "Cancellation already requested...");
+            }
+            tui->needs_redraw = true;
+        } else {
+            tui->running = false;
+        }
         return ERR_OK;
     }
 
@@ -784,19 +905,31 @@ err_t tui_process_input(tui_t* tui) {
                 tui_history_add(tui, tui->input_buffer);
                 tui_chat_add_user_message(tui, tui->input_buffer);
                 
-                // Process message with agent if available
-                if (tui->agent && tui->agent->ctx && tui->agent->ctx->provider) {
+                // Process message via ZeroClaw session bridge if available
+                if (tui->use_zeroclaw_session && tui->zc_session) {
+                    if (tui->zc_turn_inflight) {
+                        tui_chat_add_system_message(tui, "Turn is running. Press Ctrl+C to cancel.");
+                    } else {
+                        uint64_t turn_id = 0;
+                        zc_result_t send_res = zc_session_send(tui->zc_session, tui->input_buffer, &turn_id);
+                        if (send_res == ZC_OK) {
+                            tui->zc_turn_inflight = true;
+                            tui->zc_turn_cancelling = false;
+                            tui->zc_active_turn_id = turn_id;
+                        } else {
+                            tui_chat_add_system_message(tui, "Error: Failed to submit ZeroClaw message");
+                        }
+                    }
+                } else if (tui->agent && tui->agent->ctx && tui->agent->ctx->provider) {
+                    // Legacy fallback path
                     str_t user_input = str_dup_cstr(tui->input_buffer, NULL);
                     str_t response = STR_NULL;
-                    
-                    // Find active session or create one
                     agent_session_t* session = NULL;
                     if (tui->agent->ctx->active_session) {
                         session = tui->agent->ctx->active_session;
                     } else if (tui->agent->ctx->session_count > 0) {
                         session = tui->agent->ctx->sessions[0];
                     }
-                    
                     if (session) {
                         err_t err = agent_process_message(tui->agent, session, &user_input, &response);
                         if (err == ERR_OK && response.data) {
@@ -808,7 +941,6 @@ err_t tui_process_input(tui_t* tui) {
                     } else {
                         tui_chat_add_system_message(tui, "Error: No active session");
                     }
-                    
                     free((void*)user_input.data);
                 } else {
                     tui_chat_add_system_message(tui, "Warning: No provider configured");

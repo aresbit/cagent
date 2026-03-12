@@ -22,6 +22,28 @@ typedef enum {
 
 // Opaque handle to agent runtime
 typedef struct zc_agent_runtime zc_agent_runtime_t;
+typedef struct zc_session_handle zc_session_handle_t;
+
+// Session event types for event-driven TUI integration
+typedef enum {
+    ZC_EVT_NONE = 0,
+    ZC_EVT_THINKING = 1,
+    ZC_EVT_ASSISTANT_TEXT = 2,
+    ZC_EVT_TOOL_START = 3,
+    ZC_EVT_TOOL_END = 4,
+    ZC_EVT_ERROR = 5,
+    ZC_EVT_TURN_DONE = 6,
+    ZC_EVT_CANCELLED = 7,
+} zc_event_type_t;
+
+typedef struct {
+    zc_event_type_t type;
+    uint64_t turn_id;
+    const char* role;
+    const char* name;
+    const char* payload;
+    uint64_t ts_ms;
+} zc_event_t;
 
 // Initialize ZeroClaw agent runtime
 // config_json: JSON configuration string (can be NULL to use defaults)
@@ -61,6 +83,35 @@ zc_result_t zc_agent_run_interactive(
     const char* model,
     double temperature
 );
+
+// Session API (event-driven; additive, does not replace existing APIs)
+zc_result_t zc_session_create(
+    zc_agent_runtime_t* runtime,
+    const char* provider_override,
+    const char* model_override,
+    double temperature,
+    zc_session_handle_t** out_session
+);
+
+zc_result_t zc_session_send(
+    zc_session_handle_t* session,
+    const char* user_message,
+    uint64_t* out_turn_id
+);
+
+zc_result_t zc_session_poll_event(
+    zc_session_handle_t* session,
+    zc_event_t* out_event,
+    uint32_t timeout_ms
+);
+
+zc_result_t zc_session_cancel(
+    zc_session_handle_t* session,
+    uint64_t turn_id
+);
+
+void zc_session_free_event(zc_event_t* event);
+void zc_session_destroy(zc_session_handle_t* session);
 
 // Free a string returned by ZeroClaw
 void zc_free_string(char* s);

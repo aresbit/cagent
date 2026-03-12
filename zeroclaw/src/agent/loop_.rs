@@ -297,6 +297,19 @@ struct ParsedToolCall {
     arguments: serde_json::Value,
 }
 
+pub trait AgentTurnEventSink: Send {
+    fn on_text(&mut self, _text: &str) {}
+    fn on_tool_start(&mut self, _tool_name: &str, _arguments: &serde_json::Value) {}
+    fn on_tool_end(&mut self, _tool_name: &str, _result: &str) {}
+    fn should_cancel(&self) -> bool {
+        false
+    }
+}
+
+struct NoopTurnEventSink;
+
+impl AgentTurnEventSink for NoopTurnEventSink {}
+
 /// Execute a single turn of the agent loop: send messages, parse tool calls,
 /// execute tools, and loop until the LLM produces a final text response.
 pub async fn agent_turn(
@@ -307,7 +320,32 @@ pub async fn agent_turn(
     model: &str,
     temperature: f64,
 ) -> Result<String> {
+    let mut sink = NoopTurnEventSink;
+    agent_turn_with_sink(
+        provider,
+        history,
+        tools_registry,
+        observer,
+        model,
+        temperature,
+        &mut sink,
+    )
+    .await
+}
+
+pub async fn agent_turn_with_sink(
+    provider: &dyn Provider,
+    history: &mut Vec<ChatMessage>,
+    tools_registry: &[Box<dyn Tool>],
+    observer: &dyn Observer,
+    model: &str,
+    temperature: f64,
+    event_sink: &mut dyn AgentTurnEventSink,
+) -> Result<String> {
     for iteration in 0..MAX_TOOL_ITERATIONS {
+        if event_sink.should_cancel() {
+            anyhow::bail!("cancelled");
+        }
         let response = provider
             .chat_with_history(history, model, temperature)
             .await?;
@@ -324,12 +362,17 @@ pub async fn agent_turn(
         if tool_calls.is_empty() {
             // No tool calls — this is the final response
             tracing::info!(iteration = iteration, "Agent turn complete - no more tool calls");
+            let final_text = if text.is_empty() { response.clone() } else { text };
+            if !final_text.is_empty() {
+                event_sink.on_text(&final_text);
+            }
             history.push(ChatMessage::assistant(&response));
-            return Ok(if text.is_empty() { response } else { text });
+            return Ok(final_text);
         }
 
         // Print any text the LLM produced alongside tool calls
         if !text.is_empty() {
+            event_sink.on_text(&text);
             print!("{text}");
             let _ = std::io::stdout().flush();
         }
@@ -337,7 +380,11 @@ pub async fn agent_turn(
         // Execute each tool call and build results
         let mut tool_results = String::new();
         for call in &tool_calls {
+            if event_sink.should_cancel() {
+                anyhow::bail!("cancelled");
+            }
             tracing::info!(tool_name = %call.name, arguments = %call.arguments, "Executing tool");
+            event_sink.on_tool_start(&call.name, &call.arguments);
             let start = Instant::now();
             let result = if let Some(tool) = find_tool(tools_registry, &call.name) {
                 match tool.execute(call.arguments.clone()).await {
@@ -372,6 +419,7 @@ pub async fn agent_turn(
                 "<tool_response name=\"{}\">\n{}\n</tool_response>",
                 call.name, result
             );
+            event_sink.on_tool_end(&call.name, &result);
             tracing::info!(tool_name = %call.name, success = result.len() < 1000, "Tool execution complete");
         }
 
@@ -665,7 +713,88 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::memory::{Memory, MemoryCategory, SqliteMemory};
+    use crate::observability::NoopObserver;
+    use crate::tools::{Tool, ToolResult};
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
+
+    struct MockTool;
+
+    #[async_trait]
+    impl Tool for MockTool {
+        fn name(&self) -> &str {
+            "shell"
+        }
+
+        fn description(&self) -> &str {
+            "mock shell"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object"})
+        }
+
+        async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult {
+                success: true,
+                output: "mock tool output".to_string(),
+                error: None,
+            })
+        }
+    }
+
+    struct MockProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl crate::providers::Provider for MockProvider {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            // Not used in this test.
+            Ok("unused".to_string())
+        }
+
+        async fn chat_with_history(
+            &self,
+            _messages: &[ChatMessage],
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            let n = self.calls.fetch_add(1, Ordering::Relaxed);
+            if n == 0 {
+                Ok(
+                    "Let me check.\n<tool_call>\n{\"name\":\"shell\",\"arguments\":{\"command\":\"echo hi\"}}\n</tool_call>"
+                        .to_string(),
+                )
+            } else {
+                Ok("All done.".to_string())
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct VecSink {
+        events: Vec<String>,
+    }
+
+    impl AgentTurnEventSink for VecSink {
+        fn on_text(&mut self, text: &str) {
+            self.events.push(format!("text:{text}"));
+        }
+        fn on_tool_start(&mut self, tool_name: &str, _arguments: &serde_json::Value) {
+            self.events.push(format!("tool_start:{tool_name}"));
+        }
+        fn on_tool_end(&mut self, tool_name: &str, _result: &str) {
+            self.events.push(format!("tool_end:{tool_name}"));
+        }
+    }
 
     #[test]
     fn parse_tool_calls_extracts_single_call() {
@@ -847,5 +976,39 @@ After text."#;
 
         let recalled = mem.recall("45", 5).await.unwrap();
         assert!(recalled.iter().any(|entry| entry.content.contains("45")));
+    }
+
+    #[tokio::test]
+    async fn agent_turn_with_sink_emits_tool_and_text_events() {
+        let provider = MockProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let mut history = vec![ChatMessage::system("sys"), ChatMessage::user("hello")];
+        let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(MockTool)];
+        let observer = NoopObserver;
+        let mut sink = VecSink::default();
+
+        let result = agent_turn_with_sink(
+            &provider,
+            &mut history,
+            &tools_registry,
+            &observer,
+            "mock-model",
+            0.0,
+            &mut sink,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, "All done.");
+        assert_eq!(
+            sink.events,
+            vec![
+                "text:Let me check.".to_string(),
+                "tool_start:shell".to_string(),
+                "tool_end:shell".to_string(),
+                "text:All done.".to_string(),
+            ]
+        );
     }
 }
