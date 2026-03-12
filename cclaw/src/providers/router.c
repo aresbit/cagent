@@ -47,6 +47,10 @@ static bool provider_supports_model_by_name(const char* provider_name, const cha
         // OpenRouter supports many models
         return true;
     }
+    else if (strcmp(provider_name, "ollama") == 0) {
+        // Ollama accepts local model tags such as qwen3.5:2b, llama3.2, etc.
+        return model[0] != '\0';
+    }
 
     return false;
 }
@@ -210,7 +214,7 @@ err_t provider_router_create_with_failover(config_t* config,
     }
 
     // All providers failed, try to create any available provider
-    const char* providers_to_try[] = {"openrouter", "openai", "anthropic", "deepseek", "kimi", NULL};
+    const char* providers_to_try[] = {"openrouter", "openai", "anthropic", "deepseek", "kimi", "ollama", NULL};
 
     for (uint32_t i = 0; providers_to_try[i]; i++) {
         // Skip already tried providers

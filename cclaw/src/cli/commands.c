@@ -145,23 +145,30 @@ err_t cmd_onboard(config_t* config, int argc, char** argv) {
     printf("║              CClaw Setup Wizard                          ║\n");
     printf("╚══════════════════════════════════════════════════════════╝\n\n");
 
-    // API Key
     printf("\nAvailable providers: openrouter, anthropic, openai, kimi, deepseek, ollama\n");
-    str_t api_key = prompt_input("Enter your API key", NULL);
-    if (!str_empty(api_key)) {
-        if (config->api_key.data) free((void*)config->api_key.data);
-        config->api_key = api_key;
-    }
-
     str_t provider = prompt_input("Default provider (openrouter/anthropic/openai/kimi/deepseek/ollama)", "openrouter");
     if (!str_empty(provider)) {
         if (config->default_provider.data) free((void*)config->default_provider.data);
         config->default_provider = provider;
     }
 
+    // API Key (optional for local Ollama)
+    const char* effective_provider = str_empty(provider) ? "openrouter" : provider.data;
+    if (strcmp(effective_provider, "ollama") == 0) {
+        printf("Ollama selected: local provider, API key is optional.\n");
+        str_t api_key = prompt_input("Enter API key (leave empty for local Ollama)", "");
+        if (config->api_key.data) free((void*)config->api_key.data);
+        config->api_key = str_empty(api_key) ? STR_NULL : api_key;
+    } else {
+        str_t api_key = prompt_input("Enter your API key", NULL);
+        if (!str_empty(api_key)) {
+            if (config->api_key.data) free((void*)config->api_key.data);
+            config->api_key = api_key;
+        }
+    }
+
     // Model - suggest appropriate default based on provider
     const char* default_model = "anthropic/claude-3.5-sonnet";
-    const char* effective_provider = str_empty(provider) ? "openrouter" : provider.data;
     if (strcmp(effective_provider, "kimi") == 0) {
         default_model = "moonshot-k2.5";
     } else if (strcmp(effective_provider, "deepseek") == 0) {
@@ -171,7 +178,7 @@ err_t cmd_onboard(config_t* config, int argc, char** argv) {
     } else if (strcmp(effective_provider, "openai") == 0) {
         default_model = "gpt-4o";
     } else if (strcmp(effective_provider, "ollama") == 0) {
-        default_model = "llama3.2";
+        default_model = "qwen3.5:2b";
     }
     str_t model = prompt_input("Default model", default_model);
     if (!str_empty(model)) {
