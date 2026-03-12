@@ -18,6 +18,329 @@
 // Global TUI instance for signal handling
 static tui_t* g_tui = NULL;
 
+typedef struct tui_border_chars_t {
+    const char* ul;
+    const char* ur;
+    const char* ll;
+    const char* lr;
+    const char* h;
+    const char* v;
+} tui_border_chars_t;
+
+static tui_border_chars_t tui_get_border_chars(const tui_t* tui) {
+    const bool unicode = tui && tui->config.theme.use_unicode && tui_supports_unicode();
+    if (unicode) {
+        return (tui_border_chars_t){
+            .ul = "╔", .ur = "╗", .ll = "╚", .lr = "╝", .h = "═", .v = "║"
+        };
+    }
+    return (tui_border_chars_t){
+        .ul = "+", .ur = "+", .ll = "+", .lr = "+", .h = "-", .v = "|"
+    };
+}
+
+static tui_theme_t tui_theme_high_contrast(void) {
+    return (tui_theme_t){
+        .color_bg = 0,
+        .color_fg = 15,
+        .color_primary = 51,
+        .color_secondary = 226,
+        .color_success = 46,
+        .color_warning = 220,
+        .color_error = 196,
+        .color_muted = 250,
+        .use_bold = true,
+        .use_italic = false,
+        .use_unicode = true
+    };
+}
+
+static tui_theme_t tui_theme_minimal(void) {
+    return (tui_theme_t){
+        .color_bg = 16,
+        .color_fg = 250,
+        .color_primary = 250,
+        .color_secondary = 244,
+        .color_success = 248,
+        .color_warning = 248,
+        .color_error = 248,
+        .color_muted = 240,
+        .use_bold = false,
+        .use_italic = false,
+        .use_unicode = false
+    };
+}
+
+static const char* tui_session_status_icon(const tui_t* tui, const agent_session_t* session, bool is_active) {
+    const bool unicode = tui_supports_unicode();
+    if (!tui || !session) return unicode ? "·" : ".";
+    if (is_active && tui->zc_turn_cancelling) return unicode ? "⏸" : "!";
+    if (is_active && tui->zc_turn_inflight) return unicode ? "▶" : ">";
+    if (session->total_messages == 0) return unicode ? "○" : "o";
+    if (is_active) return unicode ? "●" : "*";
+    return unicode ? "·" : ".";
+}
+
+static void tui_session_preview(const agent_session_t* session, char* out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!session) return;
+
+    if (session->current && session->current->content.data && session->current->content.len > 0) {
+        snprintf(out, out_size, "%s", session->current->content.data);
+        return;
+    }
+
+    if (session->model.data && session->model.len > 0) {
+        snprintf(out, out_size, "model: %s", session->model.data);
+        return;
+    }
+
+    snprintf(out, out_size, "new session");
+}
+
+static int32_t tui_get_active_session_index(const tui_t* tui) {
+    if (!tui || !tui->agent || !tui->agent->ctx || !tui->agent->ctx->active_session) {
+        return -1;
+    }
+    for (uint32_t i = 0; i < tui->agent->ctx->session_count; i++) {
+        if (tui->agent->ctx->sessions[i] == tui->agent->ctx->active_session) {
+            return (int32_t)i;
+        }
+    }
+    return -1;
+}
+
+static int32_t tui_get_view_session_index(const tui_t* tui) {
+    if (!tui || !tui->agent || !tui->agent->ctx || tui->agent->ctx->session_count == 0) {
+        return -1;
+    }
+
+    if (tui->active_panel == TUI_PANEL_SIDEBAR) {
+        if (tui->selected_session < tui->agent->ctx->session_count) {
+            return (int32_t)tui->selected_session;
+        }
+    }
+
+    return tui_get_active_session_index(tui);
+}
+
+static bool tui_message_visible_for_session(const tui_message_t* msg, int32_t view_session_index) {
+    if (!msg) return false;
+    if (view_session_index < 0) return true;
+    return msg->session_index < 0 || msg->session_index == view_session_index;
+}
+
+static bool tui_is_tool_sender(const char* sender) {
+    if (!sender) return false;
+    return strcmp(sender, "tool_call") == 0 || strcmp(sender, "tool_result") == 0;
+}
+
+static void tui_compact_tool_text(const char* text, char* out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!text) return;
+
+    size_t n = strcspn(text, "\r\n");
+    if (n > 96) n = 96;
+    if (n + 4 >= out_size) n = out_size > 4 ? out_size - 4 : 0;
+    if (n > 0) {
+        memcpy(out, text, n);
+        out[n] = '\0';
+    }
+    if (text[n] != '\0') {
+        strncat(out, "...", out_size - strlen(out) - 1);
+    }
+}
+
+static void tui_session_append_tree_message(
+    tui_t* tui,
+    agent_message_type_t type,
+    const char* text,
+    const char* tool_name,
+    const char* tool_args,
+    const char* tool_result
+) {
+    if (!tui || tui->suppress_session_persist || !tui->agent || !tui->agent->ctx) return;
+
+    agent_session_t* session = tui->agent->ctx->active_session;
+    if (!session) return;
+
+    str_t content = str_dup_cstr(text ? text : "", NULL);
+    agent_message_t* msg = agent_message_create(type, &content);
+    free((void*)content.data);
+    if (!msg) return;
+
+    if (tool_name) msg->tool_name = str_dup_cstr(tool_name, NULL);
+    if (tool_args) msg->tool_args = str_dup_cstr(tool_args, NULL);
+    if (tool_result) msg->tool_result = str_dup_cstr(tool_result, NULL);
+
+    if (session->current) {
+        agent_message_add_child(session->current, msg);
+    } else {
+        session->root = msg;
+    }
+    session->current = msg;
+    session->total_messages++;
+    session->last_active = msg->timestamp;
+}
+
+static void tui_format_tool_text(
+    char* out,
+    size_t out_size,
+    const char* phase,
+    const char* tool_name,
+    const char* payload
+) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    const char* name = (tool_name && tool_name[0] != '\0') ? tool_name : "tool";
+    const char* data = (payload && payload[0] != '\0') ? payload : "";
+    if (strcmp(phase, "start") == 0) {
+        snprintf(out, out_size, "[tool:start] %s %s", name, data);
+    } else {
+        snprintf(out, out_size, "[tool:end] %s %s", name, data);
+    }
+}
+
+static void tui_chat_add_message_internal_ex(
+    tui_t* tui,
+    const char* sender,
+    const char* text,
+    int32_t forced_session_index,
+    bool persist
+) {
+    if (!tui || !text) return;
+
+    tui_message_t* msg = calloc(1, sizeof(tui_message_t));
+    if (!msg) return;
+
+    msg->sender = strdup(sender);
+    msg->text = strdup(text);
+    msg->timestamp = 0; // TODO: get actual timestamp
+    msg->session_index = forced_session_index >= -1 ? forced_session_index : tui_get_active_session_index(tui);
+    msg->next = NULL;
+
+    // Add to linked list
+    if (tui->messages_tail) {
+        tui->messages_tail->next = msg;
+    } else {
+        tui->messages = msg;
+    }
+    tui->messages_tail = msg;
+    tui->message_count++;
+
+    // Limit message count to prevent memory issues
+    if (tui->message_count > 1000) {
+        tui_message_t* old = tui->messages;
+        tui->messages = old->next;
+        free(old->text);
+        free(old->sender);
+        free(old);
+        tui->message_count--;
+    }
+
+    if (persist && tui->use_zeroclaw_session) {
+        if (strcmp(sender, "user") == 0) {
+            tui_session_append_tree_message(tui, AGENT_MSG_USER, text, NULL, NULL, NULL);
+        } else if (strcmp(sender, "assistant") == 0) {
+            tui_session_append_tree_message(tui, AGENT_MSG_ASSISTANT, text, NULL, NULL, NULL);
+        } else {
+            tui_session_append_tree_message(tui, AGENT_MSG_SYSTEM, text, NULL, NULL, NULL);
+        }
+    }
+}
+
+static bool tui_has_messages_for_session(const tui_t* tui, int32_t session_index) {
+    if (!tui || session_index < 0) return false;
+    for (tui_message_t* m = tui->messages; m; m = m->next) {
+        if (m->session_index == session_index) return true;
+    }
+    return false;
+}
+
+static void tui_hydrate_session_messages(tui_t* tui, int32_t session_index) {
+    if (!tui || !tui->agent || !tui->agent->ctx || session_index < 0) return;
+    if ((uint32_t)session_index >= tui->agent->ctx->session_count) return;
+    if (tui_has_messages_for_session(tui, session_index)) return;
+
+    agent_session_t* session = tui->agent->ctx->sessions[session_index];
+    if (!session || !session->current) return;
+
+    // Build root->current path via parent pointers from current.
+    uint32_t depth = 0;
+    for (agent_message_t* p = session->current; p; p = p->parent) {
+        depth++;
+    }
+    if (depth == 0) return;
+
+    agent_message_t** path = calloc(depth, sizeof(agent_message_t*));
+    if (!path) return;
+    uint32_t i = depth;
+    for (agent_message_t* p = session->current; p; p = p->parent) {
+        if (i == 0) break;
+        path[--i] = p;
+    }
+
+    tui->suppress_session_persist = true;
+    for (uint32_t k = 0; k < depth; k++) {
+        agent_message_t* m = path[k];
+        if (!m) continue;
+
+        if (m->type == AGENT_MSG_USER) {
+            tui_chat_add_message_internal_ex(tui, "user", m->content.data ? m->content.data : "", session_index, false);
+        } else if (m->type == AGENT_MSG_ASSISTANT || m->type == AGENT_MSG_SUMMARY) {
+            tui_chat_add_message_internal_ex(tui, "assistant", m->content.data ? m->content.data : "", session_index, false);
+        } else if (m->type == AGENT_MSG_TOOL_CALL) {
+            char line[512];
+            tui_format_tool_text(
+                line,
+                sizeof(line),
+                "start",
+                m->tool_name.data,
+                m->tool_args.data ? m->tool_args.data : (m->content.data ? m->content.data : "")
+            );
+            tui_chat_add_message_internal_ex(tui, "tool_call", line, session_index, false);
+        } else if (m->type == AGENT_MSG_TOOL_RESULT) {
+            char line[512];
+            tui_format_tool_text(
+                line,
+                sizeof(line),
+                "end",
+                m->tool_name.data,
+                m->tool_result.data ? m->tool_result.data : (m->content.data ? m->content.data : "")
+            );
+            tui_chat_add_message_internal_ex(tui, "tool_result", line, session_index, false);
+        } else {
+            tui_chat_add_message_internal_ex(tui, "system", m->content.data ? m->content.data : "", session_index, false);
+        }
+    }
+    tui->suppress_session_persist = false;
+    free(path);
+}
+
+static void tui_apply_theme_mode(tui_t* tui, uint8_t mode) {
+    if (!tui) return;
+    switch (mode % 5) {
+        case 0: tui->config.theme = tui_theme_default(); break;
+        case 1: tui->config.theme = tui_theme_dark(); break;
+        case 2: tui->config.theme = tui_theme_light(); break;
+        case 3: tui->config.theme = tui_theme_high_contrast(); break;
+        default: tui->config.theme = tui_theme_minimal(); break;
+    }
+    tui->theme_mode = (uint8_t)(mode % 5);
+}
+
+static const char* tui_theme_mode_name(uint8_t mode) {
+    switch (mode % 5) {
+        case 0: return "default";
+        case 1: return "dark";
+        case 2: return "light";
+        case 3: return "high-contrast";
+        default: return "minimal";
+    }
+}
+
 // ============================================================================
 // Terminal Control
 // ============================================================================
@@ -54,14 +377,14 @@ bool tui_supports_unicode(void) {
 
 tui_theme_t tui_theme_default(void) {
     return (tui_theme_t){
-        .color_bg = 0,
-        .color_fg = 7,
-        .color_primary = 4,     // Blue
-        .color_secondary = 6,   // Cyan
-        .color_success = 2,     // Green
-        .color_warning = 3,     // Yellow
-        .color_error = 1,       // Red
-        .color_muted = 8,       // Gray
+        .color_bg = 16,
+        .color_fg = 252,
+        .color_primary = 33,
+        .color_secondary = 45,
+        .color_success = 42,
+        .color_warning = 220,
+        .color_error = 196,
+        .color_muted = 244,
         .use_bold = true,
         .use_italic = false,
         .use_unicode = true
@@ -69,7 +392,19 @@ tui_theme_t tui_theme_default(void) {
 }
 
 tui_theme_t tui_theme_dark(void) {
-    return tui_theme_default();
+    return (tui_theme_t){
+        .color_bg = 16,
+        .color_fg = 252,
+        .color_primary = 75,
+        .color_secondary = 39,
+        .color_success = 42,
+        .color_warning = 214,
+        .color_error = 203,
+        .color_muted = 243,
+        .use_bold = true,
+        .use_italic = false,
+        .use_unicode = true
+    };
 }
 
 tui_theme_t tui_theme_light(void) {
@@ -117,19 +452,16 @@ void tui_clear_screen(tui_t* tui) {
 }
 
 void tui_draw_box(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const char* title) {
-    // Draw corners and borders
-    const char* ul = "┌";
-    const char* ur = "┐";
-    const char* ll = "└";
-    const char* lr = "┘";
-    const char* hline = "─";
-    const char* vline = "│";
+    if (w < 2 || h < 2) {
+        return;
+    }
+    const tui_border_chars_t b = tui_get_border_chars(g_tui);
 
     // Top border
     tui_move_cursor(x, y);
-    printf("%s", ul);
-    for (uint16_t i = 0; i < w - 2; i++) printf("%s", hline);
-    printf("%s", ur);
+    printf("%s", b.ul);
+    for (uint16_t i = 0; i < w - 2; i++) printf("%s", b.h);
+    printf("%s", b.ur);
 
     // Title
     if (title && strlen(title) > 0) {
@@ -140,31 +472,31 @@ void tui_draw_box(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const char* ti
     // Side borders
     for (uint16_t i = 1; i < h - 1; i++) {
         tui_move_cursor(x, y + i);
-        printf("%s", vline);
+        printf("%s", b.v);
         tui_move_cursor(x + w - 1, y + i);
-        printf("%s", vline);
+        printf("%s", b.v);
     }
 
     // Bottom border
     tui_move_cursor(x, y + h - 1);
-    printf("%s", ll);
-    for (uint16_t i = 0; i < w - 2; i++) printf("%s", hline);
-    printf("%s", lr);
+    printf("%s", b.ll);
+    for (uint16_t i = 0; i < w - 2; i++) printf("%s", b.h);
+    printf("%s", b.lr);
 }
 
 void tui_draw_line(uint16_t x, uint16_t y, uint16_t len, bool horizontal) {
+    if (len == 0) return;
     tui_move_cursor(x, y);
-    const char* hline = "─";
-    const char* vline = "│";
+    const tui_border_chars_t b = tui_get_border_chars(g_tui);
 
     if (horizontal) {
         for (uint16_t i = 0; i < len; i++) {
-            printf("%s", hline);
+            printf("%s", b.h);
         }
     } else {
         for (uint16_t i = 0; i < len; i++) {
             tui_move_cursor(x, y + i);
-            printf("%s", vline);
+            printf("%s", b.v);
         }
     }
 }
@@ -175,10 +507,15 @@ void tui_draw_text(uint16_t x, uint16_t y, const char* text) {
 }
 
 void tui_draw_text_truncated(uint16_t x, uint16_t y, uint16_t max_width, const char* text) {
+    if (!text || max_width == 0) return;
     tui_move_cursor(x, y);
     size_t len = strlen(text);
     if (len > max_width) {
-        printf("%.*s...", (int)max_width - 3, text);
+        if (max_width <= 3) {
+            printf("%.*s", (int)max_width, text);
+        } else {
+            printf("%.*s...", (int)max_width - 3, text);
+        }
     } else {
         printf("%s", text);
     }
@@ -213,6 +550,10 @@ err_t tui_create(const tui_config_t* config, tui_t** out_tui) {
     tui->config = config ? *config : tui_config_default();
     tui->running = false;
     tui->needs_redraw = true;
+    tui->theme_mode = 0;
+    tui->suppress_session_persist = false;
+    tui->show_tool_details = false;
+    tui_apply_theme_mode(tui, tui->theme_mode);
 
     // Allocate input buffer
     tui->input_capacity = TUI_MAX_INPUT_LENGTH;
@@ -393,26 +734,14 @@ static void tui_poll_zeroclaw_events(tui_t* tui, uint32_t max_events) {
         } else if (ev.type == ZC_EVT_TOOL_START) {
             if (ev.name) {
                 char args_summary[140];
-                char line[320];
                 tui_format_summary(args_summary, sizeof(args_summary), ev.payload, 96);
-                if (args_summary[0] != '\0') {
-                    snprintf(line, sizeof(line), "[tool:start] %s %s", ev.name, args_summary);
-                } else {
-                    snprintf(line, sizeof(line), "[tool:start] %s", ev.name);
-                }
-                tui_chat_add_system_message(tui, line);
+                tui_chat_add_tool_call(tui, ev.name, args_summary);
             }
         } else if (ev.type == ZC_EVT_TOOL_END) {
             if (ev.name) {
                 char result_summary[140];
-                char line[320];
                 tui_format_summary(result_summary, sizeof(result_summary), ev.payload, 96);
-                if (result_summary[0] != '\0') {
-                    snprintf(line, sizeof(line), "[tool:end] %s %s", ev.name, result_summary);
-                } else {
-                    snprintf(line, sizeof(line), "[tool:end] %s", ev.name);
-                }
-                tui_chat_add_system_message(tui, line);
+                tui_chat_add_tool_result(tui, ev.name, result_summary);
             }
         } else if (ev.type == ZC_EVT_ERROR) {
             if (ev.payload) {
@@ -491,17 +820,6 @@ void tui_redraw(tui_t* tui) {
 
     tui_clear_screen(tui);
 
-    // Calculate panel sizes
-    uint16_t sidebar_width = 25;
-    uint16_t status_height = 1;
-    uint16_t input_height = 3;
-    uint16_t toolbar_height = 1;
-
-    uint16_t chat_x = sidebar_width;
-    uint16_t chat_y = toolbar_height;
-    uint16_t chat_w = tui->config.width - sidebar_width;
-    uint16_t chat_h = tui->config.height - toolbar_height - status_height - input_height;
-
     // Draw panels
     tui_draw_toolbar(tui);
     tui_draw_sidebar(tui);
@@ -513,56 +831,267 @@ void tui_redraw(tui_t* tui) {
 }
 
 void tui_draw_toolbar(tui_t* tui) {
-    // Top toolbar with key hints
-    tui_set_color(tui->config.theme.color_fg, tui->config.theme.color_primary);
-    tui_move_cursor(0, 0);
+    if (!tui || tui->config.width < 20 || tui->config.height < 8) return;
 
-    for (uint16_t i = 0; i < tui->config.width; i++) {
-        printf(" ");
+    const uint16_t w = tui->config.width;
+    const tui_border_chars_t b = tui_get_border_chars(tui);
+    tui_set_color(tui->config.theme.color_secondary, tui->config.theme.color_bg);
+    tui_draw_box(0, 0, w, 3, NULL);
+
+    tui_set_color(15, tui->config.theme.color_primary);
+    tui_move_cursor(2, 1);
+    printf("CClaw Agent TUI");
+
+    tui_set_color(tui->config.theme.color_fg, tui->config.theme.color_bg);
+    tui_move_cursor(20, 1);
+    printf("Ctrl+H Help");
+    tui_move_cursor(33, 1);
+    printf("%s Ctrl+N New", b.v);
+    tui_move_cursor(47, 1);
+    printf("%s Ctrl+B Branch", b.v);
+    tui_move_cursor(64, 1);
+    printf("%s Ctrl+C Cancel", b.v);
+    tui_move_cursor(81, 1);
+    printf("%s Ctrl+Q Quit", b.v);
+    if (tui->config.width > 108) {
+        tui_move_cursor(95, 1);
+        printf("%s Ctrl+T Theme", b.v);
     }
-
-    tui_move_cursor(1, 0);
-    printf("CClaw Agent  |  Ctrl+H: Help  |  Ctrl+N: New  |  Ctrl+B: Branch  |  Ctrl+C: Cancel  |  Ctrl+Q: Quit");
-
+    if (tui->config.width > 124) {
+        tui_move_cursor(111, 1);
+        printf("%s Ctrl+O Tools", b.v);
+    }
     tui_reset_color();
 }
 
+static const char* tui_sender_prefix(const tui_message_t* msg) {
+    const bool unicode = tui_supports_unicode();
+    if (!msg || !msg->sender) return unicode ? "∙ Msg  " : "* Msg  ";
+
+    if (strcmp(msg->sender, "user") == 0) {
+        return unicode ? "◉ You  " : "> You  ";
+    }
+    if (strcmp(msg->sender, "assistant") == 0) {
+        return unicode ? "◆ AI   " : "# AI   ";
+    }
+    if (strcmp(msg->sender, "tool_call") == 0) {
+        return unicode ? "⚙ Call " : "@ Call ";
+    }
+    if (strcmp(msg->sender, "tool_result") == 0) {
+        return unicode ? "✓ Done " : "+ Done ";
+    }
+    if (strcmp(msg->sender, "system") == 0) {
+        if (msg->text && strncmp(msg->text, "[tool:start]", 12) == 0) {
+            return unicode ? "⚙ Tool " : "@ Tool ";
+        }
+        if (msg->text && strncmp(msg->text, "[tool:end]", 10) == 0) {
+            return unicode ? "✓ Tool " : "+ Tool ";
+        }
+        return unicode ? "· Sys  " : "- Sys  ";
+    }
+    return unicode ? "∙ Msg  " : "* Msg  ";
+}
+
+static uint8_t tui_sender_color(const tui_t* tui, const tui_message_t* msg) {
+    if (!tui || !msg || !msg->sender) return 7;
+    if (strcmp(msg->sender, "user") == 0) return tui->config.theme.color_success;
+    if (strcmp(msg->sender, "assistant") == 0) return tui->config.theme.color_primary;
+    if (strcmp(msg->sender, "tool_call") == 0) return tui->config.theme.color_warning;
+    if (strcmp(msg->sender, "tool_result") == 0) return tui->config.theme.color_secondary;
+    if (msg->text) {
+        if (strncmp(msg->text, "[tool:start]", 12) == 0) return tui->config.theme.color_warning;
+        if (strncmp(msg->text, "[tool:end]", 10) == 0) return tui->config.theme.color_secondary;
+        if (strstr(msg->text, "Error") == msg->text || strstr(msg->text, "error") == msg->text) {
+            return tui->config.theme.color_error;
+        }
+    }
+    return tui->config.theme.color_muted;
+}
+
+static uint32_t tui_wrapped_lines_for_message(const tui_message_t* msg, uint16_t max_width) {
+    if (!msg || !msg->text || max_width == 0) return 0;
+
+    const char* prefix = tui_sender_prefix(msg);
+    const size_t prefix_len = strlen(prefix);
+    const uint16_t first_room = (max_width > prefix_len) ? (uint16_t)(max_width - prefix_len) : 1;
+    const uint16_t next_room = (max_width > prefix_len) ? (uint16_t)(max_width - prefix_len) : 1;
+
+    uint32_t lines = 0;
+    const char* cursor = msg->text;
+    char compact_tool[160];
+    if (g_tui && !g_tui->show_tool_details && tui_is_tool_sender(msg->sender)) {
+        tui_compact_tool_text(msg->text, compact_tool, sizeof(compact_tool));
+        cursor = compact_tool;
+    }
+    bool first_line = true;
+    while (true) {
+        const char* br = strchr(cursor, '\n');
+        const size_t seg_len = br ? (size_t)(br - cursor) : strlen(cursor);
+        size_t consumed = 0;
+        do {
+            uint16_t room = first_line ? first_room : next_room;
+            size_t take = seg_len - consumed;
+            if (take > room) take = room;
+            (void)take;
+            lines++;
+            consumed += take;
+            first_line = false;
+        } while (consumed < seg_len);
+
+        if (!br) break;
+        cursor = br + 1;
+        if (*cursor == '\0') {
+            lines++;
+            break;
+        }
+    }
+
+    return lines;
+}
+
+static void tui_render_wrapped_message(
+    tui_t* tui,
+    const tui_message_t* msg,
+    uint16_t x,
+    uint16_t* inout_y,
+    uint16_t max_width,
+    uint16_t max_lines,
+    uint32_t* inout_skip
+) {
+    if (!tui || !msg || !msg->text || !inout_y || !inout_skip || max_width == 0 || max_lines == 0) {
+        return;
+    }
+
+    const char* prefix = tui_sender_prefix(msg);
+    const char* continuation = tui_supports_unicode() ? "│      " : "|      ";
+    const size_t prefix_len = strlen(prefix);
+    const uint16_t first_room = (max_width > prefix_len) ? (uint16_t)(max_width - prefix_len) : 1;
+    const uint16_t next_room = (max_width > prefix_len) ? (uint16_t)(max_width - prefix_len) : 1;
+    const uint8_t sender_color = tui_sender_color(tui, msg);
+
+    char indent[32];
+    size_t indent_len = strlen(continuation);
+    if (indent_len >= sizeof(indent)) indent_len = sizeof(indent) - 1;
+    memcpy(indent, continuation, indent_len);
+    indent[indent_len] = '\0';
+
+    const char* cursor = msg->text;
+    char compact_tool[160];
+    if (!tui->show_tool_details && tui_is_tool_sender(msg->sender)) {
+        tui_compact_tool_text(msg->text, compact_tool, sizeof(compact_tool));
+        cursor = compact_tool;
+    }
+    bool first_line = true;
+    while (*inout_y < max_lines) {
+        const char* br = strchr(cursor, '\n');
+        const size_t seg_len = br ? (size_t)(br - cursor) : strlen(cursor);
+        size_t consumed = 0;
+
+        do {
+            uint16_t room = first_line ? first_room : next_room;
+            size_t take = seg_len - consumed;
+            if (take > room) take = room;
+
+            if (*inout_skip > 0) {
+                (*inout_skip)--;
+            } else if (*inout_y < max_lines) {
+                tui_move_cursor(x, *inout_y);
+                tui_set_color(sender_color, tui->config.theme.color_bg);
+                printf("%s", first_line ? prefix : indent);
+                tui_set_color(tui->config.theme.color_fg, tui->config.theme.color_bg);
+                printf("%.*s", (int)take, cursor + consumed);
+                (*inout_y)++;
+            }
+
+            consumed += take;
+            first_line = false;
+        } while (consumed < seg_len && *inout_y < max_lines);
+
+        if (!br || *inout_y >= max_lines) break;
+        cursor = br + 1;
+        if (*cursor == '\0') {
+            if (*inout_skip > 0) {
+                (*inout_skip)--;
+            } else if (*inout_y < max_lines) {
+                tui_move_cursor(x, *inout_y);
+                tui_set_color(sender_color, tui->config.theme.color_bg);
+                printf("%s", indent);
+                tui_set_color(tui->config.theme.color_fg, tui->config.theme.color_bg);
+                (*inout_y)++;
+            }
+            break;
+        }
+    }
+}
+
 void tui_draw_sidebar(tui_t* tui) {
-    uint16_t sidebar_w = 25;
-    uint16_t sidebar_h = tui->config.height - 1;
+    if (!tui) return;
+    const uint16_t top_h = 3;
+    const uint16_t status_h = 3;
+    const uint16_t input_h = 3;
+    const uint16_t content_h = (tui->config.height > (top_h + status_h + input_h)) ?
+        (uint16_t)(tui->config.height - top_h - status_h - input_h) : 0;
+    if (content_h < 3) return;
+    uint16_t sidebar_w = (tui->config.width > 120) ? 32 : 28;
+    if (sidebar_w + 12 > tui->config.width) {
+        sidebar_w = (uint16_t)(tui->config.width / 3);
+    }
+    if (sidebar_w < 18) sidebar_w = 18;
+    uint16_t sidebar_h = content_h;
+    uint16_t sidebar_y = top_h;
 
     const char* title = (tui->active_panel == TUI_PANEL_SIDEBAR) ? "Sessions (*)" : "Sessions";
-    tui_draw_box(0, 1, sidebar_w, sidebar_h, title);
+    tui_set_color(tui->config.theme.color_secondary, tui->config.theme.color_bg);
+    tui_draw_box(0, sidebar_y, sidebar_w, sidebar_h, title);
 
-    tui_set_color(tui->config.theme.color_muted, tui->config.theme.color_bg);
+    tui_set_color(tui->config.theme.color_fg, tui->config.theme.color_bg);
 
     // List sessions from agent
     uint32_t session_count = tui->agent ? tui->agent->ctx->session_count : 0;
-    uint32_t max_display = (sidebar_h > 3) ? sidebar_h - 3 : 0;
+    uint32_t max_rows = (sidebar_h > 4) ? sidebar_h - 4 : 0;
+    uint32_t max_sessions = max_rows / 2;
 
-    for (uint32_t i = 0; i < max_display; i++) {
-        tui_move_cursor(2, 3 + i);
-        
+    tui_set_color(tui->config.theme.color_muted, tui->config.theme.color_bg);
+    tui_move_cursor(2, (uint16_t)(sidebar_y + 1));
+    printf("Total: %u", session_count);
+
+    for (uint32_t i = 0; i < max_sessions; i++) {
+        uint16_t row1 = (uint16_t)(sidebar_y + 2 + i * 2);
+        uint16_t row2 = (uint16_t)(row1 + 1);
+        tui_move_cursor(2, row1);
+
         bool is_selected = (i == tui->selected_session);
         bool is_active = false;
-        
-        if (i < session_count && tui->agent) {
+        agent_session_t* session = NULL;
+
+        if (i < session_count && tui->agent && tui->agent->ctx) {
+            session = tui->agent->ctx->sessions[i];
             is_active = (tui->agent->ctx->active_session == tui->agent->ctx->sessions[i]);
         }
-        
-        // Highlight selected session
+
+        // Highlight selected session row
         if (is_selected && tui->active_panel == TUI_PANEL_SIDEBAR) {
             tui_set_color(tui->config.theme.color_bg, tui->config.theme.color_primary);
         } else if (is_active) {
-            tui_set_color(tui->config.theme.color_primary, tui->config.theme.color_bg);
+            tui_set_color(tui->config.theme.color_success, tui->config.theme.color_bg);
         } else {
             tui_set_color(tui->config.theme.color_muted, tui->config.theme.color_bg);
         }
-        
-        if (i < session_count) {
-            printf("%s %s", is_active ? ">" : " ", tui->agent->ctx->sessions[i]->name.data ? tui->agent->ctx->sessions[i]->name.data : "unnamed");
+
+        if (i < session_count && session) {
+            const char* status_icon = tui_session_status_icon(tui, session, is_active);
+            const char* name = session->name.data ? session->name.data : "unnamed";
+            printf("%s %s", status_icon, name);
+
+            char preview[160];
+            tui_session_preview(session, preview, sizeof(preview));
+            tui_set_color(tui->config.theme.color_muted, tui->config.theme.color_bg);
+            tui_draw_text_truncated(4, row2, (uint16_t)(sidebar_w > 6 ? sidebar_w - 6 : 1), preview);
         } else if (i == 0 && session_count == 0) {
             printf("  (no sessions)");
+            tui_set_color(tui->config.theme.color_muted, tui->config.theme.color_bg);
+            tui_move_cursor(4, row2);
+            printf("Ctrl+N to create");
         } else {
             break;
         }
@@ -572,20 +1101,40 @@ void tui_draw_sidebar(tui_t* tui) {
 }
 
 void tui_draw_chat_panel(tui_t* tui) {
-    uint16_t x = 25;
-    uint16_t y = 1;
-    uint16_t w = tui->config.width - 25;
-    uint16_t h = tui->config.height - 5;
+    if (!tui) return;
+    const uint16_t top_h = 3;
+    const uint16_t status_h = 3;
+    const uint16_t input_h = 3;
+    const uint16_t content_h = (tui->config.height > (top_h + status_h + input_h)) ?
+        (uint16_t)(tui->config.height - top_h - status_h - input_h) : 0;
+    if (content_h < 3) return;
+    uint16_t sidebar_w = (tui->config.width > 120) ? 32 : 28;
+    if (sidebar_w + 12 > tui->config.width) {
+        sidebar_w = (uint16_t)(tui->config.width / 3);
+    }
+    if (sidebar_w < 18) sidebar_w = 18;
+    uint16_t x = sidebar_w;
+    uint16_t y = top_h;
+    uint16_t w = tui->config.width > sidebar_w ? (uint16_t)(tui->config.width - sidebar_w) : 0;
+    uint16_t h = content_h;
+    if (w < 10) return;
 
-    // Draw border
-    tui_draw_box(x, y, w, h, NULL);
+    tui_set_color(tui->config.theme.color_secondary, tui->config.theme.color_bg);
+    tui_draw_box(x, y, w, h, "Conversation");
 
     // Chat content area - render messages
     tui_set_color(tui->config.theme.color_fg, tui->config.theme.color_bg);
 
     // Calculate visible message area
     uint16_t max_lines = h - 2;
-    uint16_t line_y = y + 1;
+    uint16_t draw_y = y + 1;
+    uint16_t draw_limit = (uint16_t)(y + 1 + max_lines);
+    uint16_t text_w = (w > 4) ? (uint16_t)(w - 4) : 1;
+
+    int32_t view_session_index = tui_get_view_session_index(tui);
+    if (view_session_index >= 0) {
+        tui_hydrate_session_messages(tui, view_session_index);
+    }
 
     // Show placeholder if no messages
     if (!tui->messages) {
@@ -596,55 +1145,54 @@ void tui_draw_chat_panel(tui_t* tui) {
             NULL
         };
         for (int i = 0; placeholder[i] && i < (int)max_lines; i++) {
-            tui_move_cursor(x + 2, line_y + i);
+            tui_move_cursor(x + 2, (uint16_t)(draw_y + i));
             printf("%s", placeholder[i]);
         }
     } else {
-        // Render messages from linked list
-        uint16_t lines_used = 0;
+        // Render wrapped messages from linked list
         tui_message_t* msg = tui->messages;
-        
-        // Count total messages to show from the end
-        uint32_t msg_count = 0;
+        bool has_visible = false;
+
+        uint32_t total_lines = 0;
         while (msg) {
-            msg_count++;
+            if (tui_message_visible_for_session(msg, view_session_index)) {
+                has_visible = true;
+                total_lines += tui_wrapped_lines_for_message(msg, text_w);
+            }
             msg = msg->next;
         }
 
-        // Show last N messages that fit
-        uint32_t skip = (msg_count > max_lines) ? msg_count - max_lines : 0;
+        if (!has_visible) {
+            tui_set_color(tui->config.theme.color_muted, tui->config.theme.color_bg);
+            tui_move_cursor((uint16_t)(x + 2), draw_y);
+            printf("No messages in this session yet.");
+            tui_move_cursor((uint16_t)(x + 2), (uint16_t)(draw_y + 1));
+            printf("Type to start a new thread in this session.");
+            tui_reset_color();
+            return;
+        }
+
+        uint32_t base_skip = (total_lines > max_lines) ? total_lines - max_lines : 0;
+        if (tui->scroll_offset > base_skip) {
+            tui->scroll_offset = base_skip;
+        }
+        uint32_t skip = (base_skip > tui->scroll_offset) ? base_skip - tui->scroll_offset : 0;
         msg = tui->messages;
-        for (uint32_t i = 0; i < skip && msg; i++) {
-            msg = msg->next;
-        }
 
-        // Render visible messages
-        while (msg && lines_used < max_lines) {
-            tui_move_cursor(x + 2, line_y + lines_used);
-            
-            // Color by sender
-            if (strcmp(msg->sender, "user") == 0) {
-                tui_set_color(tui->config.theme.color_success, tui->config.theme.color_bg);
-                printf("[You]: ");
-            } else if (strcmp(msg->sender, "assistant") == 0) {
-                tui_set_color(tui->config.theme.color_primary, tui->config.theme.color_bg);
-                printf("[AI]: ");
-            } else {
-                tui_set_color(tui->config.theme.color_muted, tui->config.theme.color_bg);
-                printf("[%s]: ", msg->sender);
+        while (msg && draw_y < draw_limit) {
+            if (tui_message_visible_for_session(msg, view_session_index)) {
+                tui_render_wrapped_message(tui, msg, (uint16_t)(x + 2), &draw_y, text_w, draw_limit, &skip);
+                if (skip > 0) {
+                    skip--;
+                } else if (draw_y < draw_limit) {
+                    tui_move_cursor((uint16_t)(x + 2), draw_y);
+                    tui_set_color(tui->config.theme.color_muted, tui->config.theme.color_bg);
+                    for (uint16_t i = 0; i < text_w; i++) {
+                        printf("%s", (i == 0) ? "·" : " ");
+                    }
+                    draw_y++;
+                }
             }
-            
-            tui_set_color(tui->config.theme.color_fg, tui->config.theme.color_bg);
-            
-            // Print message text (truncate if too long)
-            uint16_t max_text_width = w - 10;
-            if (strlen(msg->text) > max_text_width) {
-                printf("%.*s...", max_text_width, msg->text);
-            } else {
-                printf("%s", msg->text);
-            }
-            
-            lines_used++;
             msg = msg->next;
         }
     }
@@ -653,14 +1201,10 @@ void tui_draw_chat_panel(tui_t* tui) {
 }
 
 void tui_draw_status_bar(tui_t* tui) {
-    uint16_t y = tui->config.height - 4;
-
-    tui_set_color(15, tui->config.theme.color_primary);
-    tui_move_cursor(0, y);
-
-    for (uint16_t i = 0; i < tui->config.width; i++) {
-        printf(" ");
-    }
+    if (!tui || tui->config.height < 6) return;
+    uint16_t y = tui->config.height - 6;
+    tui_set_color(tui->config.theme.color_secondary, tui->config.theme.color_bg);
+    tui_draw_box(0, y, tui->config.width, 3, "Runtime");
 
     char status[256];
     const char* model_name = "unknown";
@@ -675,45 +1219,77 @@ void tui_draw_status_bar(tui_t* tui) {
         run_state = "running";
     }
 
+    const char* spinner = " ";
+    if (tui->zc_turn_inflight) {
+        static const char* frames[] = {"|", "/", "-", "\\"};
+        spinner = frames[(unsigned)time(NULL) % 4];
+    }
+
     snprintf(
         status,
         sizeof(status),
-        " Engine: %s  |  Model: %s  |  State: %s ",
+        "Engine: %s | Model: %s | State: %s %s | Theme: %s | Tools: %s | Scroll: %u",
         (tui->use_zeroclaw_session && tui->zc_session) ? "zeroclaw-session" : "legacy-c-agent",
         model_name,
-        run_state
+        run_state,
+        spinner,
+        tui_theme_mode_name(tui->theme_mode),
+        tui->show_tool_details ? "full" : "summary",
+        tui->scroll_offset
     );
 
-    tui_move_cursor(1, y);
+    if (tui->zc_turn_cancelling) {
+        tui_set_color(tui->config.theme.color_warning, tui->config.theme.color_bg);
+    } else if (tui->zc_turn_inflight) {
+        tui_set_color(tui->config.theme.color_success, tui->config.theme.color_bg);
+    } else {
+        tui_set_color(tui->config.theme.color_fg, tui->config.theme.color_bg);
+    }
+    tui_move_cursor(2, (uint16_t)(y + 1));
     printf("%s", status);
 
     tui_reset_color();
 }
 
 void tui_draw_input_area(tui_t* tui) {
+    if (!tui || tui->config.height < 3) return;
     uint16_t y = tui->config.height - 3;
 
-    // Clear input area
-    tui_set_color(tui->config.theme.color_fg, tui->config.theme.color_bg);
+    tui_set_color(tui->config.theme.color_secondary, tui->config.theme.color_bg);
+    tui_draw_box(0, y, tui->config.width, 3, "Input");
 
-    for (uint16_t i = 0; i < 3; i++) {
-        tui_move_cursor(0, y + i);
-        for (uint16_t j = 0; j < tui->config.width; j++) {
-            printf(" ");
+    tui_set_color(tui->config.theme.color_success, tui->config.theme.color_bg);
+    tui_move_cursor(2, (uint16_t)(y + 1));
+    printf(">");
+
+    tui_set_color(tui->config.theme.color_fg, tui->config.theme.color_bg);
+    tui_move_cursor(4, (uint16_t)(y + 1));
+    tui_draw_text_truncated(4, (uint16_t)(y + 1), (uint16_t)(tui->config.width > 8 ? tui->config.width - 8 : 1), tui->input_buffer);
+
+    if (tui->config.width > 30) {
+        const char* hint = "Ready";
+        uint8_t hint_color = tui->config.theme.color_success;
+        if (tui->zc_turn_cancelling) {
+            hint = "Cancelling";
+            hint_color = tui->config.theme.color_warning;
+        } else if (tui->zc_turn_inflight) {
+            hint = "Running";
+            hint_color = tui->config.theme.color_secondary;
+        }
+        size_t hint_len = strlen(hint);
+        uint16_t hint_x = (uint16_t)(tui->config.width - (uint16_t)hint_len - 2);
+        if (hint_x > 6) {
+            tui_set_color(hint_color, tui->config.theme.color_bg);
+            tui_move_cursor(hint_x, (uint16_t)(y + 1));
+            printf("%s", hint);
         }
     }
 
-    // Draw prompt
-    tui_set_color(tui->config.theme.color_success, tui->config.theme.color_bg);
-    tui_move_cursor(0, y + 1);
-    printf(" > ");
-
-    // Draw input text
-    tui_set_color(tui->config.theme.color_fg, tui->config.theme.color_bg);
-    printf("%s", tui->input_buffer);
-
-    // Position cursor
-    tui_move_cursor(3 + tui->input_pos, y + 1);
+    uint16_t cursor_x = (uint16_t)(4 + tui->input_pos);
+    if (cursor_x >= tui->config.width - 1) {
+        cursor_x = tui->config.width - 2;
+    }
+    tui_move_cursor(cursor_x, (uint16_t)(y + 1));
 
     tui_reset_color();
 }
@@ -786,9 +1362,19 @@ err_t tui_process_input(tui_t* tui) {
                     break;
                 case 'C': tui_input_move_right(tui); break; // Right
                 case 'D': tui_input_move_left(tui); break;  // Left
+                case 'H': tui_input_move_home(tui); break;  // Home
+                case 'F': tui_input_move_end(tui); break;   // End
                 case '3': // Delete
                     read(STDIN_FILENO, &c, 1); // consume ~
                     tui_input_delete(tui);
+                    break;
+                case '5': // PageUp
+                    read(STDIN_FILENO, &c, 1); // consume ~
+                    tui_chat_scroll_up(tui, 5);
+                    break;
+                case '6': // PageDown
+                    read(STDIN_FILENO, &c, 1); // consume ~
+                    tui_chat_scroll_down(tui, 5);
                     break;
             }
         }
@@ -819,7 +1405,23 @@ err_t tui_process_input(tui_t* tui) {
     }
 
     if (c == TUI_KEY_CTRL('h')) {
-        tui_chat_add_system_message(tui, "Help: /new=branch /quit=exit /clear=clear");
+        tui_chat_add_system_message(tui, "Help: Ctrl+N new, Ctrl+B branch, Ctrl+T theme, Ctrl+O tools, PgUp/PgDn scroll, Ctrl+C cancel, Ctrl+Q quit");
+        tui->needs_redraw = true;
+        return ERR_OK;
+    }
+
+    if (c == TUI_KEY_CTRL('o')) {
+        tui->show_tool_details = !tui->show_tool_details;
+        tui_chat_add_system_message(tui, tui->show_tool_details ? "Tool detail mode: full" : "Tool detail mode: summary");
+        tui->needs_redraw = true;
+        return ERR_OK;
+    }
+
+    if (c == TUI_KEY_CTRL('t')) {
+        tui_apply_theme_mode(tui, (uint8_t)(tui->theme_mode + 1));
+        char info[96];
+        snprintf(info, sizeof(info), "Theme switched to %s", tui_theme_mode_name(tui->theme_mode));
+        tui_chat_add_system_message(tui, info);
         tui->needs_redraw = true;
         return ERR_OK;
     }
@@ -1190,45 +1792,70 @@ const char* tui_history_next(tui_t* tui) {
 // Chat Display
 // ============================================================================
 
-static void tui_chat_add_message_internal(tui_t* tui, const char* sender, const char* text) {
-    if (!tui || !text) return;
-
-    tui_message_t* msg = calloc(1, sizeof(tui_message_t));
-    if (!msg) return;
-
-    msg->sender = strdup(sender);
-    msg->text = strdup(text);
-    msg->timestamp = 0; // TODO: get actual timestamp
-    msg->next = NULL;
-
-    // Add to linked list
-    if (tui->messages_tail) {
-        tui->messages_tail->next = msg;
-    } else {
-        tui->messages = msg;
+void tui_chat_add_message(tui_t* tui, agent_message_t* message) {
+    if (!tui || !message) return;
+    const char* sender = "system";
+    if (message->type == AGENT_MSG_USER) {
+        sender = "user";
+    } else if (message->type == AGENT_MSG_ASSISTANT) {
+        sender = "assistant";
     }
-    tui->messages_tail = msg;
-    tui->message_count++;
-
-    // Limit message count to prevent memory issues
-    if (tui->message_count > 1000) {
-        tui_message_t* old = tui->messages;
-        tui->messages = old->next;
-        free(old->text);
-        free(old->sender);
-        free(old);
-        tui->message_count--;
-    }
+    const char* text = (message->content.data && message->content.len > 0) ? message->content.data : "";
+    tui_chat_add_message_internal_ex(tui, sender, text, tui_get_active_session_index(tui), false);
+    tui->needs_redraw = true;
 }
 
 void tui_chat_add_system_message(tui_t* tui, const char* text) {
-    tui_chat_add_message_internal(tui, "system", text);
+    tui_chat_add_message_internal_ex(tui, "system", text, -2, true);
+    if (tui) tui->needs_redraw = true;
 }
 
 void tui_chat_add_user_message(tui_t* tui, const char* text) {
-    tui_chat_add_message_internal(tui, "user", text);
+    tui_chat_add_message_internal_ex(tui, "user", text, -2, true);
+    if (tui) tui->scroll_offset = 0;
+    if (tui) tui->needs_redraw = true;
 }
 
 void tui_chat_add_assistant_message(tui_t* tui, const char* text) {
-    tui_chat_add_message_internal(tui, "assistant", text);
+    tui_chat_add_message_internal_ex(tui, "assistant", text, -2, true);
+    if (tui) tui->scroll_offset = 0;
+    if (tui) tui->needs_redraw = true;
+}
+
+void tui_chat_add_tool_call(tui_t* tui, const char* tool_name, const char* args) {
+    if (!tui || !tool_name) return;
+    char line[512];
+    tui_format_tool_text(line, sizeof(line), "start", tool_name, args);
+    tui_chat_add_message_internal_ex(tui, "tool_call", line, -2, false);
+    if (tui->use_zeroclaw_session) {
+        tui_session_append_tree_message(tui, AGENT_MSG_TOOL_CALL, line, tool_name, args, NULL);
+    }
+    tui->needs_redraw = true;
+}
+
+void tui_chat_add_tool_result(tui_t* tui, const char* tool_name, const char* result) {
+    if (!tui || !tool_name) return;
+    char line[512];
+    tui_format_tool_text(line, sizeof(line), "end", tool_name, result);
+    tui_chat_add_message_internal_ex(tui, "tool_result", line, -2, false);
+    if (tui->use_zeroclaw_session) {
+        tui_session_append_tree_message(tui, AGENT_MSG_TOOL_RESULT, line, tool_name, NULL, result);
+    }
+    tui->needs_redraw = true;
+}
+
+void tui_chat_scroll_up(tui_t* tui, uint32_t lines) {
+    if (!tui) return;
+    tui->scroll_offset += lines;
+    tui->needs_redraw = true;
+}
+
+void tui_chat_scroll_down(tui_t* tui, uint32_t lines) {
+    if (!tui) return;
+    if (lines >= tui->scroll_offset) {
+        tui->scroll_offset = 0;
+    } else {
+        tui->scroll_offset -= lines;
+    }
+    tui->needs_redraw = true;
 }

@@ -63,6 +63,7 @@ typedef struct tui_message_t {
     char* text;
     char* sender;  // "user", "assistant", "system"
     uint64_t timestamp;
+    int32_t session_index; // -1 means global/unbound
     struct tui_message_t* next;
 } tui_message_t;
 
@@ -117,6 +118,9 @@ struct tui_t {
     // Running state
     bool running;
     bool needs_redraw;
+    uint8_t theme_mode;
+    bool suppress_session_persist;
+    bool show_tool_details;
 };
 
 // TUI Panel
